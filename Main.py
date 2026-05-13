@@ -12,13 +12,13 @@ st.set_page_config(
 )
 
 st.title("SSIG Field Survey Assistant")
-
 # =========================
 # OPENAI CLIENT
 # =========================
 
-api_key=st.secrets["OPENAI_API_KEY"]
-
+client = OpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"]
+)
 # =========================
 # LOAD SPREADSHEET
 # =========================
