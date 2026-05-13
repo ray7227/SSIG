@@ -18,7 +18,7 @@ st.title("SSIG Field Survey Assistant")
 # =========================
 
 client = OpenAI(
-    api_key=st.secrets["OPENAI_API_KEY"]
+    api_key=st.secrets["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"]
 )
 
 # =========================
