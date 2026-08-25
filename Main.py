@@ -14,6 +14,12 @@ st.set_page_config(
 )
 st.title("SSIG Field Survey Assistant")
 
+SSIG_PDF = "https://open.alberta.ca/dataset/93d8a251-4a9a-428f-ad99-7484c6ebabe0/resource/f4024e81-b835-4a50-8fb1-5b31d9726b84/download/2013-sensitivespeciesinventoryguidelines-apr18.pdf"
+
+with st.sidebar:
+    st.markdown("### Source")
+    st.markdown(f"[Sensitive Species Inventory Guidelines (Apr 2013)]({SSIG_PDF})")
+
 FILE = "SSIG_Breakdown.xlsx"
 
 # =========================
