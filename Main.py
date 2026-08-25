@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -11,7 +14,53 @@ st.set_page_config(
 )
 st.title("SSIG Field Survey Assistant")
 
-FILE = "SSIG_Breakdown.xlsx"   # keep the no-images copy here
+FILE = "SSIG_Breakdown.xlsx"
+
+# =========================
+# PHOTOS
+# =========================
+# One image per survey, stored in the Images folder.
+PHOTO_ROOT = "Images"
+
+PHOTOS = {
+    "Amphibians (Auditory Survey Guideline)": "Amph (Aud).png",
+    "Amphibians (Non-Acoustic Survey Guideline)": "Amph (Non-ac).png",
+    "Short-horned Lizard (ESHL)": "ESHL.png",
+    "Snake Hibernacula Searches": "Snake.png",
+    "Burrowing Owl (BUOW)": "BUOW.png",
+    "Short-Eared Owl (SEOW) (BBS survey)": "SEOW.png",
+    "Prairie Raptors (SR survey)": "SR.png",
+    "Boreal & Foothills Raptors (BBS / SR survey)": "BBS & SR.png",
+    "Grassland Birds (BBS survey)": "Grassland BBS.png",
+    "Boreal & Foothills Breeding Songbirds & Woodpeckers (BBS survey)": "Boreal and foothills BBS.png",
+    "Sharp-tailed Grouse (STGR)": "STGR.png",
+    "Western Grebe (WEGR)": "WEGR.png",
+    "Piping Plover (PIPL)": "PIPL.png",
+    "Yellow Rail (BBS survey)": "Yellow Rail.png",
+    "Common Nighthawk (CONI) (BBS survey)": "Nighthawk.png",
+    "Bats": "Bats.png",
+    "Swift Fox (SWFO)": "SWFO.png",
+    "Ord's Kangaroo Rat (OKRA)": "OKRA.png",
+    "Non-invasive Mammals Surveys-Winter Tracking & Searches for Mineral Licks": "Mineral licks.png",
+    "Species at Risk Plant Surveys": "Plant.png",
+}
+
+def normalize(s):
+    s = str(s).lower().strip()
+    s = s.replace("\u2019", "'").replace("\u2018", "'")   # curly to straight apostrophe
+    for dash in ("\u2013", "\u2014", "\u2011"):           # en/em/non-breaking to hyphen
+        s = s.replace(dash, "-")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+PHOTOS_NORM = {normalize(k): v for k, v in PHOTOS.items()}
+
+def get_photo(survey):
+    name = PHOTOS.get(survey) or PHOTOS_NORM.get(normalize(survey))
+    if not name:
+        return None
+    path = Path(PHOTO_ROOT) / name
+    return path if path.is_file() else None
 
 # =========================
 # LOAD SPREADSHEET
@@ -51,6 +100,14 @@ tab_browse, tab_compare, tab_search = st.tabs(["Browse", "Compare", "Search"])
 with tab_browse:
     survey = st.selectbox("Survey type", survey_types, key="browse_survey")
     st.header(survey)
+
+    photo = get_photo(survey)
+    if photo:
+        left, right = st.columns([2, 3])
+        with left:
+            st.image(str(photo), use_container_width=True)
+        st.divider()
+
     for field in fields:
         value = get_value(field, survey)
         if not value:
