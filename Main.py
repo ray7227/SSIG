@@ -195,7 +195,8 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
     flha_when = "Daily (Prime Contractor)" if prime else "Daily"
     submit = [("FLHA / Tailgate", flha_when, "SafetyAdmin")]
     if first_day:
-        submit.append(("Kickoff + ERP / First Aid", "First day", "SafetyAdmin"))
+        submit.append(("Project Orientation / Kickoff Meeting", "First day", "SafetyAdmin"))
+        submit.append(("Project ERP + First Aid Assessment", "First day", "SafetyAdmin"))
     if vehicle == "AiM-owned":
         submit.append(("Vehicle inspection", "Daily", "Fleetio"))
     elif vehicle == "Personal":
