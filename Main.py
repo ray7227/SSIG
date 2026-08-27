@@ -1,8 +1,17 @@
 import re
+from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+
+try:
+    from astral import LocationInfo
+    from astral.sun import sun
+    ASTRAL_OK = True
+except ImportError:
+    ASTRAL_OK = False
 
 # =========================
 # PAGE SETUP
@@ -21,11 +30,24 @@ with st.sidebar:
     st.markdown(f"[Sensitive Species Inventory Guidelines (Apr 2013)]({SSIG_PDF})")
 
 FILE = "SSIG_Breakdown.xlsx"
+TZ = ZoneInfo("America/Edmonton")   # BC Peace users: MST year-round, adjust if needed
+
+# Alberta location presets (lat, lon)
+LOCATIONS = {
+    "Calgary": (51.05, -114.07),
+    "Edmonton": (53.55, -113.49),
+    "Grande Prairie": (55.17, -118.80),
+    "Medicine Hat": (50.04, -110.68),
+    "Brooks": (50.58, -111.90),
+    "Lethbridge": (49.69, -112.83),
+    "Fort McMurray": (56.73, -111.38),
+    "Fort St. John, BC": (56.25, -120.85),
+    "Custom": None,
+}
 
 # =========================
 # PHOTOS
 # =========================
-# One image per survey, stored in the Images folder.
 PHOTO_ROOT = "Images"
 
 PHOTOS = {
@@ -53,8 +75,8 @@ PHOTOS = {
 
 def normalize(s):
     s = str(s).lower().strip()
-    s = s.replace("\u2019", "'").replace("\u2018", "'")   # curly to straight apostrophe
-    for dash in ("\u2013", "\u2014", "\u2011"):           # en/em/non-breaking to hyphen
+    s = s.replace("\u2019", "'").replace("\u2018", "'")
+    for dash in ("\u2013", "\u2014", "\u2011"):
         s = s.replace(dash, "-")
     s = re.sub(r"\s+", " ", s)
     return s
@@ -73,8 +95,6 @@ def get_photo(survey):
 # =========================
 @st.cache_data
 def load_data(path):
-    # Row 0 = header (Category | survey type | survey type | ...)
-    # Column 0 = field names (Species, Status, Method, Survey Window, ...)
     df = pd.read_excel(path, header=0)
     df = df.rename(columns={df.columns[0]: "Field"})
     df["Field"] = df["Field"].astype(str).str.strip()
@@ -97,10 +117,110 @@ def get_value(field, survey):
         return ""
     return str(val).strip()
 
+def field_value(field_query, survey):
+    # match an index label by normalized name, exact first then contains
+    for idx in df.index:
+        if normalize(idx) == normalize(field_query):
+            return get_value(idx, survey)
+    for idx in df.index:
+        if normalize(field_query) in normalize(idx):
+            return get_value(idx, survey)
+    return ""
+
+# =========================
+# TIMING ENGINE
+# =========================
+def sun_times(lat, lon, d):
+    loc = LocationInfo(latitude=lat, longitude=lon)
+    s = sun(loc.observer, date=d, tzinfo=TZ)
+    return s["sunrise"], s["sunset"]
+
+def _clock(text):
+    m = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
+    if not m:
+        return None
+    h = int(m.group(1)) % 12
+    if m.group(3) == "pm":
+        h += 12
+    return dtime(h, int(m.group(2) or 0))
+
+def _offset(text, anchor):
+    # returns a timedelta if <anchor> is present, else None. Zero if no number given.
+    if anchor not in text:
+        return None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?)\s+" + anchor, text)
+    if not m:
+        return timedelta(0)
+    n = float(m.group(1))
+    unit = m.group(2)
+    return timedelta(hours=n) if unit.startswith(("hour", "hr")) else timedelta(minutes=n)
+
+def compute_window(rule, sunrise, sunset, d):
+    """Best-effort start/end from a Time-of-Day rule. Returns (start, end)."""
+    t = normalize(rule)
+    start = end = None
+
+    off = _offset(t, "before sunrise")
+    if off is not None:
+        start = sunrise - off
+    elif (off := _offset(t, "after sunrise")) is not None:
+        start = sunrise + off
+    elif (off := _offset(t, "after sunset")) is not None:
+        start = sunset + off
+
+    off = _offset(t, "before sunset")
+    if off is not None:
+        end = sunset - off
+
+    if ("no later than" in t) or ("until" in t):
+        tail = t.split("no later than")[-1] if "no later than" in t else t.split("until")[-1]
+        c = _clock(tail)
+        if c:
+            end = datetime.combine(d, c).replace(tzinfo=TZ)
+            if start and end <= start:
+                end += timedelta(days=1)
+
+    if start is None and end is None and "daylight" in t:
+        start, end = sunrise, sunset
+
+    return start, end
+
+def fmt(dt):
+    return dt.strftime("%H:%M") if dt else "-"
+
+# =========================
+# SAFETY FORMS
+# =========================
+def safety_forms(vehicle, first_day, water_ice, prime):
+    rows = [("FLHA / Tailgate Meeting", "Daily, before work", "SafetyAdmin")]
+    if first_day:
+        rows.append(("Project Orientation / Kickoff", "Before work (first day)", "SafetyAdmin"))
+        rows.append(("Project ERP & First Aid Assessment", "Before work (first day)", "SafetyAdmin"))
+    if vehicle == "AiM-owned":
+        rows.append(("Vehicle Inspection", "Each day vehicle is billed", "Fleetio"))
+    elif vehicle == "Personal":
+        rows.append(("Vehicle Inspection", "Monthly (personal equipment)", "SafetyAdmin"))
+    elif vehicle == "Rental":
+        rows.append(("Vehicle Inspection", "Daily (falls under fleet program once rented)", "Fleetio"))
+    if water_ice == "Water":
+        rows.append(("Working on Water Form", "Before water work", "SafetyAdmin"))
+    elif water_ice == "Ice":
+        rows.append(("Working on Ice Form", "Before ice work", "SafetyAdmin"))
+        rows.append(("Ice Rod Inspection", "Before working on ice", "SafetyAdmin"))
+    if prime:
+        rows.append(("Prime Contractor Tailgate", "Daily when AiM is Prime", "SafetyAdmin"))
+    rows.append(("Journey Management Plan", "Per current practice (TBD)", "SafetyAdmin"))
+    rows.append(("Hazard ID", "As needed (new/unique/repetitive hazard)", "SafetyAdmin"))
+    rows.append(("Near Miss Report", "As needed (if a near miss occurs)", "SafetyAdmin"))
+    rows.append(("Incident Report", "As needed (if a loss occurs)", "SafetyAdmin"))
+    return rows
+
 # =========================
 # UI
 # =========================
-tab_browse, tab_compare, tab_search = st.tabs(["Browse", "Compare", "Search"])
+tab_browse, tab_compare, tab_search, tab_plan = st.tabs(
+    ["Browse", "Compare", "Search", "Plan Day"]
+)
 
 # ---- BROWSE ----
 with tab_browse:
@@ -168,3 +288,76 @@ with tab_search:
                 st.divider()
         else:
             st.info("No matches.")
+
+# ---- PLAN DAY ----
+with tab_plan:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        plan_date = st.date_input("Date", key="plan_date")
+        loc_name = st.selectbox("Location", list(LOCATIONS.keys()), key="plan_loc")
+    with c2:
+        if LOCATIONS[loc_name] is None:
+            lat = st.number_input("Latitude", value=51.05, format="%.4f")
+            lon = st.number_input("Longitude", value=-114.07, format="%.4f")
+        else:
+            lat, lon = LOCATIONS[loc_name]
+        site_type = st.radio("Site type", ["Non-linear", "Linear"], horizontal=True)
+    with c3:
+        vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
+        first_day = st.checkbox("First day of project")
+        water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
+        prime = st.checkbox("AiM is Prime Contractor")
+
+    plan_surveys = st.multiselect("Surveys this day", survey_types, key="plan_surveys")
+
+    if not ASTRAL_OK:
+        st.warning("Add 'astral' to requirements.txt to compute sunrise/sunset.")
+
+    if plan_surveys:
+        # Sun times
+        if ASTRAL_OK:
+            sunrise, sunset = sun_times(lat, lon, plan_date)
+            m1, m2 = st.columns(2)
+            m1.metric("Sunrise", fmt(sunrise))
+            m2.metric("Sunset", fmt(sunset))
+        else:
+            sunrise = sunset = None
+
+        # Timing table
+        st.subheader("Day timing")
+        timing_rows = []
+        for s in plan_surveys:
+            rule = field_value("Time of Day", s)
+            start = end = None
+            if ASTRAL_OK and rule:
+                start, end = compute_window(rule, sunrise, sunset, plan_date)
+            timing_rows.append({
+                "Survey": s,
+                "Start": fmt(start),
+                "End": fmt(end),
+                "Rule (from SSIG)": rule or "Not specified",
+                "_sort": start.timestamp() if start else float("inf"),
+            })
+        timing_rows.sort(key=lambda r: r["_sort"])
+        timing_df = pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in timing_rows])
+        st.table(timing_df)
+        st.caption("Start/End compute only when the SSIG rule is a recognizable form. Otherwise use the rule text plus sunrise/sunset above.")
+
+        # Survey details
+        st.subheader(f"What you're doing ({site_type.lower()} site)")
+        detail_rows = []
+        for s in plan_surveys:
+            detail_rows.append({
+                "Survey": s,
+                "Method": field_value("Method", s) or "-",
+                "Personnel": field_value("Required Survey Personnel", s) or "-",
+                "# Surveys": field_value("Number of Surveys Required", s) or "-",
+            })
+        st.table(pd.DataFrame(detail_rows))
+
+        # Safety forms
+        st.subheader("Safety forms for the day")
+        forms = safety_forms(vehicle, first_day, water_ice, prime)
+        st.table(pd.DataFrame(forms, columns=["Form", "When", "Where"]))
+    else:
+        st.info("Pick at least one survey to build the day plan.")
