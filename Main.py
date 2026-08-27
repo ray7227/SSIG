@@ -32,6 +32,7 @@ with st.sidebar:
     st.markdown(f"[Wildlife Sweep Protocols (2020)]({SWEEP_PDF})")
 
 FILE = "SSIG_Breakdown.xlsx"
+SWEEP_FILE = "Sweep_Breakdown.xlsx"
 TZ = ZoneInfo("America/Edmonton")   # BC Peace users: MST year-round, adjust if needed
 
 # Alberta location presets (lat, lon)
@@ -129,6 +130,31 @@ def field_value(field_query, survey):
             return get_value(idx, survey)
     return ""
 
+try:
+    sweep_df = load_data(SWEEP_FILE)
+except FileNotFoundError:
+    sweep_df = None
+
+def render_browse(bdf, key, photo_fn=None):
+    options = list(bdf.columns)
+    flds = [f for f in bdf.index if f.lower() != "photo"]
+    choice = st.selectbox("Select", options, key=key)
+    st.header(choice)
+    if photo_fn:
+        p = photo_fn(choice)
+        if p:
+            left, right = st.columns([2, 3])
+            with left:
+                st.image(str(p), use_container_width=True)
+            st.divider()
+    for f in flds:
+        val = bdf.loc[f, choice]
+        if pd.isna(val) or not str(val).strip():
+            continue
+        st.markdown(f"**{f}**")
+        st.write(str(val).strip())
+        st.divider()
+
 # =========================
 # TIMING ENGINE
 # =========================
@@ -217,29 +243,20 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
 # =========================
 # UI
 # =========================
-tab_browse, tab_compare, tab_search, tab_plan = st.tabs(
-    ["Browse", "Compare", "Search", "Plan Day"]
+tab_browse, tab_sweep, tab_compare, tab_search, tab_plan = st.tabs(
+    ["Survey", "Sweep", "Compare", "Search", "Plan Day"]
 )
 
-# ---- BROWSE ----
+# ---- SURVEY ----
 with tab_browse:
-    survey = st.selectbox("Survey type", survey_types, key="browse_survey")
-    st.header(survey)
+    render_browse(df, "browse_survey", get_photo)
 
-    photo = get_photo(survey)
-    if photo:
-        left, right = st.columns([2, 3])
-        with left:
-            st.image(str(photo), use_container_width=True)
-        st.divider()
-
-    for field in fields:
-        value = get_value(field, survey)
-        if not value:
-            continue
-        st.markdown(f"**{field}**")
-        st.write(value)
-        st.divider()
+# ---- SWEEP ----
+with tab_sweep:
+    if sweep_df is None:
+        st.info("Add Sweep_Breakdown.xlsx (same layout as the SSIG sheet) to browse sweep details here.")
+    else:
+        render_browse(sweep_df, "browse_sweep")
 
 # ---- COMPARE ----
 with tab_compare:
