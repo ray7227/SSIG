@@ -24,10 +24,12 @@ st.set_page_config(
 st.title("SSIG Field Survey Assistant")
 
 SSIG_PDF = "https://open.alberta.ca/dataset/93d8a251-4a9a-428f-ad99-7484c6ebabe0/resource/f4024e81-b835-4a50-8fb1-5b31d9726b84/download/2013-sensitivespeciesinventoryguidelines-apr18.pdf"
+SWEEP_PDF = "https://open.alberta.ca/dataset/d15221f2-f6d8-4671-8b49-d8fff6eab2b6/resource/6968392a-9e05-4bd8-bd76-ea107ba86c1c/download/aep-wildlife-sweep-protocols-sensitive-species-inventory-guidelines-2020.pdf"
 
 with st.sidebar:
-    st.markdown("### Source")
-    st.markdown(f"[Sensitive Species Inventory Guidelines (Apr 2013)]({SSIG_PDF})")
+    st.markdown("### Sources")
+    st.markdown(f"[Sensitive Species Inventory Guidelines (2013)]({SSIG_PDF})")
+    st.markdown(f"[Wildlife Sweep Protocols (2020)]({SWEEP_PDF})")
 
 FILE = "SSIG_Breakdown.xlsx"
 TZ = ZoneInfo("America/Edmonton")   # BC Peace users: MST year-round, adjust if needed
@@ -288,22 +290,20 @@ with tab_search:
 
 # ---- PLAN DAY ----
 with tab_plan:
+    mode = st.radio(
+        "Mode", ["Wildlife sweep", "Protocol survey"], horizontal=True, key="plan_mode"
+    )
+
+    # Shared safety inputs (both modes)
     c1, c2, c3 = st.columns(3)
     with c1:
         plan_date = st.date_input("Date", key="plan_date")
-        loc_name = st.selectbox("Location", list(LOCATIONS.keys()), key="plan_loc")
-    with c2:
-        if LOCATIONS[loc_name] is None:
-            lat = st.number_input("Latitude", value=51.05, format="%.4f")
-            lon = st.number_input("Longitude", value=-114.07, format="%.4f")
-        else:
-            lat, lon = LOCATIONS[loc_name]
-        site_type = st.radio("Site type", ["Non-linear", "Linear"], horizontal=True)
-    with c3:
         vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
-        first_day = st.checkbox("First day of project")
+    with c2:
         water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
         drive_hr = st.number_input("Drive one-way (hr)", min_value=0.0, value=0.0, step=0.5)
+    with c3:
+        first_day = st.checkbox("First day of project")
         prime = st.checkbox(
             "AiM is Prime Contractor",
             help=(
@@ -313,45 +313,59 @@ with tab_plan:
             ),
         )
 
-    plan_surveys = st.multiselect("Surveys this day", survey_types, key="plan_surveys")
+    if mode == "Protocol survey":
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            loc_name = st.selectbox("Location", list(LOCATIONS.keys()), key="plan_loc")
+        with lc2:
+            if LOCATIONS[loc_name] is None:
+                lat = st.number_input("Latitude", value=51.05, format="%.4f")
+                lon = st.number_input("Longitude", value=-114.07, format="%.4f")
+            else:
+                lat, lon = LOCATIONS[loc_name]
+        site_type = st.radio("Site type", ["Non-linear", "Linear"], horizontal=True)
 
-    if not ASTRAL_OK:
-        st.warning("Add 'astral' to requirements.txt to compute sunrise/sunset.")
+        plan_surveys = st.multiselect("Surveys this day", survey_types, key="plan_surveys")
 
-    if plan_surveys:
-        sunrise = sunset = None
-        if ASTRAL_OK:
-            sunrise, sunset = sun_times(lat, lon, plan_date)
+        if not ASTRAL_OK:
+            st.warning("Add 'astral' to requirements.txt to compute sunrise/sunset.")
 
-        # Header line
-        st.markdown(f"### {plan_date:%b %d, %Y}  ·  {loc_name}")
-        bits = [f"{site_type} site"]
-        if ASTRAL_OK:
-            bits = [f"Sunrise {fmt(sunrise)}", f"Sunset {fmt(sunset)}"] + bits
-        st.caption("  ·  ".join(bits))
+        if plan_surveys:
+            sunrise = sunset = None
+            if ASTRAL_OK:
+                sunrise, sunset = sun_times(lat, lon, plan_date)
 
-        # Timeline: one row per survey, sorted by start time
-        rows = []
-        for s in plan_surveys:
-            rule = field_value("Time of Day", s)
-            start = end = None
-            if ASTRAL_OK and rule:
-                start, end = compute_window(rule, sunrise, sunset, plan_date)
-            when = f"{fmt(start)}-{fmt(end)}" if (start and end) else (rule or "-")
-            rows.append({
-                "Survey": s,
-                "What": field_value("Method", s) or "-",
-                "When": when,
-                "Crew": field_value("Required Survey Personnel", s) or "-",
-                "_sort": start.timestamp() if start else float("inf"),
-            })
-        rows.sort(key=lambda r: r["_sort"])
-        st.table(pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in rows]))
+            st.markdown(f"### {plan_date:%b %d, %Y}  ·  {loc_name}")
+            bits = [f"{site_type} site"]
+            if ASTRAL_OK:
+                bits = [f"Sunrise {fmt(sunrise)}", f"Sunset {fmt(sunset)}"] + bits
+            st.caption("  ·  ".join(bits))
 
-        # Forms
-        submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr)
-        st.markdown("**Forms to submit**")
-        st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
-        st.caption(f"As needed: {as_needed}")
+            rows = []
+            for s in plan_surveys:
+                rule = field_value("Time of Day", s)
+                start = end = None
+                if ASTRAL_OK and rule:
+                    start, end = compute_window(rule, sunrise, sunset, plan_date)
+                when = f"{fmt(start)}-{fmt(end)}" if (start and end) else (rule or "-")
+                rows.append({
+                    "Survey": s,
+                    "What": field_value("Method", s) or "-",
+                    "When": when,
+                    "Crew": field_value("Required Survey Personnel", s) or "-",
+                    "_sort": start.timestamp() if start else float("inf"),
+                })
+            rows.sort(key=lambda r: r["_sort"])
+            st.table(pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in rows]))
     else:
-        st.info("Pick at least one survey to build the day plan.")
+        st.markdown(f"### {plan_date:%b %d, %Y}  ·  Wildlife sweep")
+        st.caption(
+            "Runs on the construction / disturbance schedule, not SSIG timing windows. "
+            "See Wildlife Sweep Protocols in the sidebar."
+        )
+
+    # Forms (both modes)
+    submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr)
+    st.markdown("**Forms to submit**")
+    st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
+    st.caption(f"As needed: {as_needed}")
