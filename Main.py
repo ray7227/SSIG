@@ -192,28 +192,24 @@ def fmt(dt):
 # SAFETY FORMS
 # =========================
 def safety_forms(vehicle, first_day, water_ice, prime):
-    rows = [("FLHA / Tailgate Meeting", "Daily, before work", "SafetyAdmin")]
+    submit = [("FLHA / Tailgate", "Daily", "SafetyAdmin")]
     if first_day:
-        rows.append(("Project Orientation / Kickoff", "Before work (first day)", "SafetyAdmin"))
-        rows.append(("Project ERP & First Aid Assessment", "Before work (first day)", "SafetyAdmin"))
+        submit.append(("Kickoff + ERP / First Aid", "First day", "SafetyAdmin"))
     if vehicle == "AiM-owned":
-        rows.append(("Vehicle Inspection", "Each day vehicle is billed", "Fleetio"))
+        submit.append(("Vehicle inspection", "Daily billed", "Fleetio"))
     elif vehicle == "Personal":
-        rows.append(("Vehicle Inspection", "Monthly (personal equipment)", "SafetyAdmin"))
+        submit.append(("Vehicle inspection", "Monthly", "SafetyAdmin"))
     elif vehicle == "Rental":
-        rows.append(("Vehicle Inspection", "Daily (falls under fleet program once rented)", "Fleetio"))
+        submit.append(("Vehicle inspection", "Daily", "Fleetio"))
     if water_ice == "Water":
-        rows.append(("Working on Water Form", "Before water work", "SafetyAdmin"))
+        submit.append(("Working on Water", "Before water work", "SafetyAdmin"))
     elif water_ice == "Ice":
-        rows.append(("Working on Ice Form", "Before ice work", "SafetyAdmin"))
-        rows.append(("Ice Rod Inspection", "Before working on ice", "SafetyAdmin"))
+        submit.append(("Working on Ice + Ice Rod", "Before ice work", "SafetyAdmin"))
     if prime:
-        rows.append(("Prime Contractor Tailgate", "Daily when AiM is Prime", "SafetyAdmin"))
-    rows.append(("Journey Management Plan", "Per current practice (TBD)", "SafetyAdmin"))
-    rows.append(("Hazard ID", "As needed (new/unique/repetitive hazard)", "SafetyAdmin"))
-    rows.append(("Near Miss Report", "As needed (if a near miss occurs)", "SafetyAdmin"))
-    rows.append(("Incident Report", "As needed (if a loss occurs)", "SafetyAdmin"))
-    return rows
+        submit.append(("Prime Contractor Tailgate", "Daily", "SafetyAdmin"))
+    submit.append(("Journey Mgmt Plan", "As usual", "SafetyAdmin"))
+    as_needed = "Hazard ID, Near Miss, Incident"
+    return submit, as_needed
 
 # =========================
 # UI
@@ -314,50 +310,39 @@ with tab_plan:
         st.warning("Add 'astral' to requirements.txt to compute sunrise/sunset.")
 
     if plan_surveys:
-        # Sun times
+        sunrise = sunset = None
         if ASTRAL_OK:
             sunrise, sunset = sun_times(lat, lon, plan_date)
-            m1, m2 = st.columns(2)
-            m1.metric("Sunrise", fmt(sunrise))
-            m2.metric("Sunset", fmt(sunset))
-        else:
-            sunrise = sunset = None
 
-        # Timing table
-        st.subheader("Day timing")
-        timing_rows = []
+        # Header line
+        st.markdown(f"### {plan_date:%b %d, %Y}  ·  {loc_name}")
+        bits = [f"{site_type} site"]
+        if ASTRAL_OK:
+            bits = [f"Sunrise {fmt(sunrise)}", f"Sunset {fmt(sunset)}"] + bits
+        st.caption("  ·  ".join(bits))
+
+        # Timeline: one row per survey, sorted by start time
+        rows = []
         for s in plan_surveys:
             rule = field_value("Time of Day", s)
             start = end = None
             if ASTRAL_OK and rule:
                 start, end = compute_window(rule, sunrise, sunset, plan_date)
-            timing_rows.append({
+            when = f"{fmt(start)}-{fmt(end)}" if (start and end) else (rule or "-")
+            rows.append({
                 "Survey": s,
-                "Start": fmt(start),
-                "End": fmt(end),
-                "Rule (from SSIG)": rule or "Not specified",
+                "What": field_value("Method", s) or "-",
+                "When": when,
+                "Crew": field_value("Required Survey Personnel", s) or "-",
                 "_sort": start.timestamp() if start else float("inf"),
             })
-        timing_rows.sort(key=lambda r: r["_sort"])
-        timing_df = pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in timing_rows])
-        st.table(timing_df)
-        st.caption("Start/End compute only when the SSIG rule is a recognizable form. Otherwise use the rule text plus sunrise/sunset above.")
+        rows.sort(key=lambda r: r["_sort"])
+        st.table(pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in rows]))
 
-        # Survey details
-        st.subheader(f"What you're doing ({site_type.lower()} site)")
-        detail_rows = []
-        for s in plan_surveys:
-            detail_rows.append({
-                "Survey": s,
-                "Method": field_value("Method", s) or "-",
-                "Personnel": field_value("Required Survey Personnel", s) or "-",
-                "# Surveys": field_value("Number of Surveys Required", s) or "-",
-            })
-        st.table(pd.DataFrame(detail_rows))
-
-        # Safety forms
-        st.subheader("Safety forms for the day")
-        forms = safety_forms(vehicle, first_day, water_ice, prime)
-        st.table(pd.DataFrame(forms, columns=["Form", "When", "Where"]))
+        # Forms
+        submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime)
+        st.markdown("**Forms to submit**")
+        st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
+        st.caption(f"As needed: {as_needed}")
     else:
         st.info("Pick at least one survey to build the day plan.")
