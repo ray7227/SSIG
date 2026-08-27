@@ -197,7 +197,7 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
     if first_day:
         submit.append(("Kickoff + ERP / First Aid", "First day", "SafetyAdmin"))
     if vehicle == "AiM-owned":
-        submit.append(("Vehicle inspection", "Daily billed", "Fleetio"))
+        submit.append(("Vehicle inspection", "Daily", "Fleetio"))
     elif vehicle == "Personal":
         submit.append(("Vehicle inspection", "Monthly", "SafetyAdmin"))
     elif vehicle == "Rental":
