@@ -191,8 +191,9 @@ def fmt(dt):
 # =========================
 # SAFETY FORMS
 # =========================
-def safety_forms(vehicle, first_day, water_ice, prime):
-    submit = [("FLHA / Tailgate", "Daily", "SafetyAdmin")]
+def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
+    flha_when = "Daily (Prime Contractor)" if prime else "Daily"
+    submit = [("FLHA / Tailgate", flha_when, "SafetyAdmin")]
     if first_day:
         submit.append(("Kickoff + ERP / First Aid", "First day", "SafetyAdmin"))
     if vehicle == "AiM-owned":
@@ -205,9 +206,8 @@ def safety_forms(vehicle, first_day, water_ice, prime):
         submit.append(("Working on Water", "Before water work", "SafetyAdmin"))
     elif water_ice == "Ice":
         submit.append(("Working on Ice + Ice Rod", "Before ice work", "SafetyAdmin"))
-    if prime:
-        submit.append(("Prime Contractor Tailgate", "Daily", "SafetyAdmin"))
-    submit.append(("Journey Mgmt Plan", "As usual", "SafetyAdmin"))
+    if drive_hr > 3:
+        submit.append(("Journey Mgmt Plan", "Drive over 3 hr", "SafetyAdmin"))
     as_needed = "Hazard ID, Near Miss, Incident"
     return submit, as_needed
 
@@ -302,7 +302,15 @@ with tab_plan:
         vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
         first_day = st.checkbox("First day of project")
         water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
-        prime = st.checkbox("AiM is Prime Contractor")
+        drive_hr = st.number_input("Drive one-way (hr)", min_value=0.0, value=0.0, step=0.5)
+        prime = st.checkbox(
+            "AiM is Prime Contractor",
+            help=(
+                "Only when AiM is Prime Contractor on a site with multiple trades "
+                "or subcontractors working under us (e.g. large construction). "
+                "Rare for standalone wildlife surveys. Submitted as the FLHA Tailgate."
+            ),
+        )
 
     plan_surveys = st.multiselect("Surveys this day", survey_types, key="plan_surveys")
 
@@ -340,7 +348,7 @@ with tab_plan:
         st.table(pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in rows]))
 
         # Forms
-        submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime)
+        submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr)
         st.markdown("**Forms to submit**")
         st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
         st.caption(f"As needed: {as_needed}")
