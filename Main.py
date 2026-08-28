@@ -241,6 +241,26 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
     return submit, as_needed
 
 # =========================
+# WILDLIFE SWEEP REFERENCE (AEP 2020 protocol, paraphrased)
+# =========================
+SWEEP_INFO = [
+    ("What it is", "A walkthrough of the proposed disturbance site plus a surrounding buffer to find important wildlife features that must be avoided. Required before land or vegetation disturbance on applicable dispositions."),
+    ("Features to find", "Occupied raptor nests, heron rookeries, occupied dens, hibernacula, and natural mineral licks. Also osprey and bald eagle nests outside the Grassland and Parkland regions at any time of year."),
+    ("Coverage", "The disturbance footprint plus a 100 m buffer."),
+    ("Timing", "Within 10 days before activity starts, as close to day one as possible. Earlier is allowed with justification (e.g. bear dens before deep snow)."),
+    ("Conditions", "Daylight, and weather that does not obscure detection."),
+    ("Personnel", "Someone with the education, knowledge, or experience to locate and identify wildlife features. No wildlife research permit needed."),
+    ("If a feature is found", "Photograph and georeference it without flushing the occupant. Avoid it by re-siting or re-timing, or submit a non-routine application with justification and mitigation. If the disposition is already issued and the feature sits within a setback, contact the Regulator before entry."),
+    ("If nothing is found", "Keep the sweep record for the life of the disposition. Activity may proceed subject to other requirements."),
+    ("Records to keep", "Timing and its justification, personnel, environmental conditions, a GPS track of the walkthrough, and photos plus coordinates of any features. Held by the disposition holder for the disposition duration."),
+    ("Occupied nest", "In current use: a bird present, territorial display, fresh feces, and/or feathers. Raptor nests stay active through the next year, with active status dropped June 1 of the second year of inactivity."),
+    ("Occupied den", "In current use: an animal present, territorial display, fresh feces, digging or excavation, and/or tracks. Occupancy varies by season (breeding vs hibernation den)."),
+    ("Liability", "Rests with the Disposition Holder, Licensee, or Permit Holder. An inadequate sweep that leads to disturbance can bring enforcement under the Wildlife Act or Public Lands Act."),
+    ("Exemptions", "Dispositions in an EPEA-approved area with an authorized WMMP whose sweep protocol meets or exceeds this one."),
+    ("Does not replace", "A full wildlife survey where one is required, disposition approval conditions, or federal MBCA/SARA requirements (contact ECCC for those)."),
+]
+
+# =========================
 # UI
 # =========================
 tab_browse, tab_sweep, tab_compare, tab_search, tab_plan = st.tabs(
@@ -253,10 +273,15 @@ with tab_browse:
 
 # ---- SWEEP ----
 with tab_sweep:
-    if sweep_df is None:
-        st.info("Add Sweep_Breakdown.xlsx (same layout as the SSIG sheet) to browse sweep details here.")
-    else:
+    if sweep_df is not None:
         render_browse(sweep_df, "browse_sweep")
+    else:
+        st.subheader("Wildlife Sweep (AEP 2020 protocol)")
+        st.table(pd.DataFrame(SWEEP_INFO, columns=["", "Detail"]))
+        st.caption(
+            "Source: Wildlife Sweep Protocols 2020 (sidebar). Species-specific setback "
+            "distances aren't in this protocol; use the disposition conditions or SSIG."
+        )
 
 # ---- COMPARE ----
 with tab_compare:
