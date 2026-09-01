@@ -226,7 +226,7 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
         submit.append(("Project Orientation / Kickoff Meeting", "First day", "SafetyAdmin"))
         submit.append(("Project ERP + First Aid Assessment", "First day", "SafetyAdmin"))
     if vehicle == "AiM-owned":
-        submit.append(("Vehicle inspection", "Daily", "Fleetio"))
+        submit.append(("Vehicle inspection", "Weekly", "Fleetio"))
     elif vehicle == "Personal":
         submit.append(("Vehicle inspection", "Monthly", "SafetyAdmin"))
     elif vehicle == "Rental":
@@ -261,10 +261,28 @@ SWEEP_INFO = [
 ]
 
 # =========================
+# CLUBROOT SAMPLING REFERENCE (AiM SOP AB_C_E002, condensed)
+# =========================
+CLUBROOT_INFO = [
+    ("What it is", "Soil sampling to detect clubroot (Plasmodiophora brassicae), a soil-borne disease of canola and other crucifers. Spores travel on soil stuck to equipment, tires, and boots, so results set the cleaning requirements during construction."),
+    ("Where to sample", "The construction footprint and the primary agricultural access point of each cultivated field. On pipeline projects, land is split into ownership-based tracts (usually quarter sections)."),
+    ("Footprint sampling", "Walk the footprint (incl. ROW and temp workspace) in a zigzag. Take ~100 g topsoil at even spacing from both edges and the center, prioritizing low or wet spots. 5 samples per tract combined into one composite. A quarter section is ~800 m, so about every 150 m."),
+    ("Ag access sampling", "5 samples in a W pattern at the primary agricultural access of each tract. Run alongside footprint sampling, or do footprint first then access points if they're far off (800+ m)."),
+    ("Sample handling", "Label and seal bags, store in coolers, deliver to the lab as soon as possible (confirm the lab with the PM)."),
+    ("Equipment cleaning", "Required at every new tract or change in land ownership. Assume every field may be contaminated. Brush and pick off soil first, then spray boots, shovel, and gear with 2.0% bleach solution, brush, and mist again. Log the Clubroot Cleaning Form in SafetyAdmin with geotagged, timestamped photos. Boot covers are an option but tear easily (carry two sets)."),
+    ("Cleaning kit", "2.0% bleach solution (or equivalent), spray bottle(s), brush(es), pick(s), boot covers (optional)."),
+    ("Pre-planning", "Build a clubroot tracker in Excel (legal location, tract ID, access). Use Google Earth plus a KML of the footprint and tracts (from GIS). Access only off public roads; no crossing private land without landowner permission. Note In-and-Out vs Walk-through tracts and leap-frog vehicles. Load KMZ/KML to GPS or Avenza."),
+    ("Weather", "Do not sample in adverse weather."),
+    ("Forms", "FLHA Tailgate, Vehicle Inspection, Journey Mgmt Plan, POKA (kickoff), ERP + First Aid, Prime Contractor Tailgate if applicable, plus the project Clubroot Cleaning Form."),
+    ("After / back home", "Complete OkAlone/SPOT/InReach check-outs. Upload cleaning forms, GPS tracks, waypoints, and photos to the SharePoint project folder, named FirstInitialLastName_Clubroot_Date. Send forms plus zipped data to the PM. When lab results arrive, update the tracker and assign a risk level per spores/gram, which sets future cleaning requirements."),
+    ("Key hazards", "Uneven terrain, weather, landowners and dogs, barbed wire, bleach, fatigue, working alone, wildlife, insect bites, farm and construction equipment."),
+]
+
+# =========================
 # UI
 # =========================
-tab_browse, tab_sweep, tab_compare, tab_search, tab_plan = st.tabs(
-    ["Survey", "Sweep", "Compare", "Search", "Plan Day"]
+tab_browse, tab_sweep, tab_clubroot, tab_compare, tab_search, tab_plan = st.tabs(
+    ["Survey", "Sweep", "Clubroot", "Compare", "Search", "Plan Day"]
 )
 
 # ---- SURVEY ----
@@ -282,6 +300,12 @@ with tab_sweep:
             "Source: Wildlife Sweep Protocols 2020 (sidebar). Species-specific setback "
             "distances aren't in this protocol; use the disposition conditions or SSIG."
         )
+
+# ---- CLUBROOT ----
+with tab_clubroot:
+    st.subheader("Clubroot Sampling")
+    st.table(pd.DataFrame(CLUBROOT_INFO, columns=["", "Detail"]))
+    st.caption("Source: AiM Clubroot Sampling SOP (AB_C_E002).")
 
 # ---- COMPARE ----
 with tab_compare:
