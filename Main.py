@@ -13,6 +13,13 @@ try:
 except ImportError:
     ASTRAL_OK = False
 
+# Photo Organizer tab (optional; needs photo_organizer.py + anthropic/pillow).
+try:
+    from photo_organizer import render_photo_organizer
+    PHOTO_OK = True
+except Exception:
+    PHOTO_OK = False
+
 # =========================
 # PAGE SETUP
 # =========================
@@ -25,6 +32,8 @@ st.title("SSIG Field Survey Assistant")
 
 SSIG_PDF = "https://open.alberta.ca/dataset/93d8a251-4a9a-428f-ad99-7484c6ebabe0/resource/f4024e81-b835-4a50-8fb1-5b31d9726b84/download/2013-sensitivespeciesinventoryguidelines-apr18.pdf"
 SWEEP_PDF = "https://open.alberta.ca/dataset/d15221f2-f6d8-4671-8b49-d8fff6eab2b6/resource/6968392a-9e05-4bd8-bd76-ea107ba86c1c/download/aep-wildlife-sweep-protocols-sensitive-species-inventory-guidelines-2020.pdf"
+FWMIS_CHECK = "https://www.alberta.ca/fwmis-loadform-check-tool"
+FWMIS_GUIDE = "https://www.alberta.ca/system/files/custom_downloaded_images/ep-fwmis-data-submission-guide.pdf"
 
 with st.sidebar:
     st.markdown("### Sources")
@@ -219,7 +228,7 @@ def fmt(dt):
 # =========================
 # SAFETY FORMS
 # =========================
-def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
+def safety_forms(vehicle, first_day, water_ice, prime, drive_hr, staff_type):
     flha_when = "Daily (Prime Contractor)" if prime else "Daily"
     submit = [("FLHA / Tailgate", flha_when, "SafetyAdmin")]
     if first_day:
@@ -237,7 +246,9 @@ def safety_forms(vehicle, first_day, water_ice, prime, drive_hr):
         submit.append(("Working on Ice + Ice Rod", "Before ice work", "SafetyAdmin"))
     if drive_hr > 3:
         submit.append(("Journey Mgmt Plan", "Drive over 3 hr", "SafetyAdmin"))
-    as_needed = "Hazard ID, Near Miss, Incident"
+    hazard_when = "Monthly (field staff)" if staff_type == "Field" else "Yearly (remote)"
+    submit.append(("Hazard ID", hazard_when, "SafetyAdmin"))
+    as_needed = "Near Miss, Incident"
     return submit, as_needed
 
 # =========================
@@ -279,10 +290,22 @@ CLUBROOT_INFO = [
 ]
 
 # =========================
+# EXPENSES REFERENCE (Vantage Point)
+# =========================
+EXPENSES_INFO = [
+    ("Daily meals", "Meals", "$20 x 3 meals = $60/day"),
+    ("Truck mileage (actual)", "Mileage - Trucks", "Enter the day's km"),
+    ("Fuel", "Mileage - flat rate", "Attach the fuel receipt to get reimbursed"),
+    ("Data access fee", "Data access fee", "$25"),
+]
+
+# =========================
 # UI
 # =========================
-tab_browse, tab_sweep, tab_clubroot, tab_compare, tab_search, tab_plan = st.tabs(
-    ["Survey", "Sweep", "Clubroot", "Compare", "Search", "Plan Day"]
+(tab_browse, tab_sweep, tab_clubroot, tab_compare, tab_search,
+ tab_plan, tab_expenses, tab_fwmis, tab_photos) = st.tabs(
+    ["Survey", "Sweep", "Clubroot", "Compare", "Search", "Plan Day",
+     "Expenses", "FWMIS", "Photos"]
 )
 
 # ---- SURVEY ----
@@ -365,6 +388,10 @@ with tab_plan:
     with c1:
         plan_date = st.date_input("Date", key="plan_date")
         vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
+        staff_type = st.selectbox(
+            "Staff type", ["Field", "Remote"],
+            help="Sets Hazard ID frequency: field = monthly, remote = yearly.",
+        )
     with c2:
         water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
         drive_hr = st.number_input("Drive one-way (hr)", min_value=0.0, value=0.0, step=0.5)
@@ -431,7 +458,34 @@ with tab_plan:
         )
 
     # Forms (both modes)
-    submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr)
+    submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr, staff_type)
     st.markdown("**Forms to submit**")
     st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
     st.caption(f"As needed: {as_needed}")
+
+# ---- EXPENSES ----
+with tab_expenses:
+    st.subheader("Expenses - Vantage Point")
+    st.caption("What to pick in Vantage Point for common field expenses.")
+    st.table(pd.DataFrame(EXPENSES_INFO, columns=["Expense", "Pick in Vantage Point", "Amount / notes"]))
+    st.caption("Calgary office work truck = Truck ID 1601.")
+
+# ---- FWMIS ----
+with tab_fwmis:
+    st.subheader("FWMIS Post-Field Submission")
+    st.markdown("**Goal**")
+    st.write(
+        "After a sweep or survey, compile every species observed into the FWMIS "
+        "loadform for upload. (Species compiler and loadform export will live here.)"
+    )
+    st.markdown("**Links**")
+    st.markdown(f"- [FWMIS loadform check tool]({FWMIS_CHECK})")
+    st.markdown(f"- [FWMIS Data Submission Guide]({FWMIS_GUIDE})")
+
+# ---- PHOTOS ----
+with tab_photos:
+    if PHOTO_OK:
+        render_photo_organizer()
+    else:
+        st.subheader("Photo Organizer")
+        st.info("Add photo_organizer.py to the same folder to enable this tab. The rest of the app works without it.")
