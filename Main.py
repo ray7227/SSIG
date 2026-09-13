@@ -357,7 +357,7 @@ def _exif_date(data):
         pass
     return ""
 
-TIME_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[-+]\d{1,2}:?\d{2})?")
+TIME_RE = re.compile(r"\d{1,2}:\d{1,2}(?::\d{1,2})?(?:\s*[-+]\d{1,2}:?\d{2})?")
 
 def _parse_date(text):
     m = DATE_RE.search(text)
@@ -376,6 +376,12 @@ def _label_from_text(text):
     t = re.sub(r"\s+", "_", t).strip("_").lower()
     return t[:40] or "photo"
 
+def _prep(im):
+    # Sharpen white banner text: grayscale, upscale, threshold to black-on-white.
+    g = im.convert("L")
+    g = g.resize((g.width * 2, g.height * 2))
+    return g.point(lambda p: 0 if p > 165 else 255)
+
 @st.cache_data(show_spinner=False)
 def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.12):
     img = _open_image(data)
@@ -384,10 +390,14 @@ def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.12):
     w, h = img.size
     if mode == "banner":
         top = int(h * (1 - band))
-        label_img = img.crop((0, top, int(w * 0.66), h))       # left + middle
+        label_img = img.crop((0, top, int(w * 0.60), h))       # left + middle
         date_img = img.crop((int(w * 0.60), top, w, h))        # right corner
-        label = _label_from_text(pytesseract.image_to_string(label_img))
-        date = _parse_date(pytesseract.image_to_string(date_img)) or _exif_date(data)
+        label = _label_from_text(
+            pytesseract.image_to_string(_prep(label_img), config="--psm 6")
+        )
+        date = _parse_date(
+            pytesseract.image_to_string(_prep(date_img), config="--psm 6")
+        ) or _exif_date(data)
     else:
         text = pytesseract.image_to_string(img)
         label = _label_from_text(text)
