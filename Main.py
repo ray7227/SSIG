@@ -679,9 +679,10 @@ with tab_photos:
         )
         if up:
             IMG_EXT = (".jpg", ".jpeg", ".png", ".heic", ".heif")
-            items = []  # (display_name, image_bytes)
+            items = []  # (display_name, image_bytes, source_zip_or_None)
             for f in up:
                 if f.name.lower().endswith(".zip"):
+                    src = f.name[:-4]
                     try:
                         with zipfile.ZipFile(io.BytesIO(f.getvalue())) as z:
                             for info in z.infolist():
@@ -690,18 +691,18 @@ with tab_photos:
                                 if info.is_dir() or "__MACOSX" in nm or base.startswith("."):
                                     continue
                                 if nm.lower().endswith(IMG_EXT):
-                                    items.append((base, z.read(info)))
+                                    items.append((base, z.read(info), src))
                     except Exception as e:
                         st.error(f"{f.name}: {e}")
                 else:
-                    items.append((f.name, f.getvalue()))
+                    items.append((f.name, f.getvalue(), None))
 
             if not items:
                 st.info("No images found in the upload.")
             else:
                 rows = []
                 with st.spinner(f"Reading {len(items)} photos..."):
-                    for name, data in items:
+                    for name, data, _src in items:
                         label, date = ocr_photo(data, mode, band)
                         rows.append({"File": name, "Label": label, "Date": date})
 
@@ -724,14 +725,22 @@ with tab_photos:
                 )
 
                 if st.button("Build zip"):
+                    zip_sources = {s for _, _, s in items if s}
+                    multi = len(zip_sources) >= 2
                     used = set()
                     buf = io.BytesIO()
                     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
                         for pos, (_, r) in enumerate(edited.iterrows()):
                             data = items[pos][1]
+                            src = items[pos][2]
                             date = str(r["Date"]).strip() or "nodate"
                             label = _safe(r["Label"])
-                            base = f"{date}/{label}_{date}"
+                            if multi and src:
+                                srcf = re.sub(r'[\\/:*?"<>|]+', "_", src).strip() or "zip"
+                                folder = f"{srcf}/{date}"
+                            else:
+                                folder = date
+                            base = f"{folder}/{label}_{date}"
                             name = base + ".jpg"
                             k = 2
                             while name in used:
