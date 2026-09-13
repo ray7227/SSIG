@@ -3,6 +3,13 @@ from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import io
+import re
+import zipfile
+from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import streamlit as st
 
@@ -12,6 +19,20 @@ try:
     ASTRAL_OK = True
 except ImportError:
     ASTRAL_OK = False
+
+# Free local OCR for the Photos tab (needs Tesseract installed on the machine).
+try:
+    import pytesseract
+    from PIL import Image, ExifTags
+    from dateutil import parser as dateparser
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except Exception:
+        pass
+    OCR_LIBS = True
+except Exception:
+    OCR_LIBS = False
 
 # =========================
 # PAGE SETUP
@@ -293,6 +314,78 @@ EXPENSES_INFO = [
 ]
 
 # =========================
+# OCR HELPERS (free, local Tesseract)
+# =========================
+_MON = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+DATE_RE = re.compile(
+    r"(20\d{2}[-/.\s]\d{1,2}[-/.\s]\d{1,2})"
+    r"|(\d{1,2}[-/.\s]\d{1,2}[-/.\s]20\d{2})"
+    r"|(" + _MON + r"\s+\d{1,2},?\s+20\d{2})"
+    r"|(\d{1,2}\s+" + _MON + r"\s+20\d{2})",
+    re.IGNORECASE,
+)
+
+def _tesseract_ok():
+    if not OCR_LIBS:
+        return False
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+def _open_image(data):
+    return Image.open(io.BytesIO(data))
+
+def _to_jpeg_bytes(data):
+    img = _open_image(data)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+def _exif_date(data):
+    try:
+        img = _open_image(data)
+        exif = img._getexif() or {}
+        tags = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
+        raw = tags.get("DateTimeOriginal") or tags.get("DateTime")
+        if raw:
+            return datetime.strptime(str(raw)[:10], "%Y:%m:%d").strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return ""
+
+def _parse_date(text):
+    m = DATE_RE.search(text)
+    if not m:
+        return ""
+    try:
+        return dateparser.parse(m.group(0), dayfirst=False).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+def _label_from_text(text, date_str):
+    t = re.sub(r"\s+", " ", text)
+    if date_str:
+        t = DATE_RE.sub("", t)
+    t = re.sub(r"[^A-Za-z0-9 _-]", "", t)
+    t = re.sub(r"\s+", "_", t).strip("_").lower()
+    return t[:40] or "photo"
+
+@st.cache_data(show_spinner=False)
+def ocr_photo(data: bytes):
+    text = pytesseract.image_to_string(_open_image(data))
+    date = _parse_date(text) or _exif_date(data)
+    label = _label_from_text(text, date)
+    return label, date
+
+def _safe(name):
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip()).strip("_").lower()
+    return name or "photo"
+
+# =========================
 # UI
 # =========================
 (tab_browse, tab_sweep, tab_clubroot, tab_compare, tab_search,
@@ -478,4 +571,66 @@ with tab_fwmis:
 # ---- PHOTOS ----
 with tab_photos:
     st.subheader("Photos")
-    st.info("Placeholder for now. A free way to sort field photos by date and label will go here later.")
+    st.caption("Reads the label in each photo, pre-fills a name and date, you fix any misses, then download a zip sorted by date. Free, runs on your machine.")
+
+    if not OCR_LIBS:
+        st.info("Add pillow, pillow-heif, and pytesseract to requirements.txt to enable this.")
+    elif not _tesseract_ok():
+        st.warning(
+            "Tesseract isn't installed. On Streamlit Cloud add a packages.txt containing 'tesseract-ocr'. "
+            "On Windows install the UB Mannheim build, then restart the app."
+        )
+    else:
+        up = st.file_uploader(
+            "Upload the day's photos",
+            type=["jpg", "jpeg", "png", "heic", "heif"],
+            accept_multiple_files=True,
+            key="photo_up",
+        )
+        if up:
+            rows = []
+            with st.spinner(f"Reading {len(up)} photos..."):
+                for f in up:
+                    label, date = ocr_photo(f.getvalue())
+                    rows.append({"File": f.name, "Label": label, "Date": date})
+
+            st.caption("Check the label and date, edit anything the OCR got wrong.")
+            edited = st.data_editor(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                num_rows="fixed",
+                key="photo_editor",
+                column_config={
+                    "File": st.column_config.TextColumn(disabled=True),
+                    "Label": st.column_config.TextColumn(),
+                    "Date": st.column_config.TextColumn(help="YYYY-MM-DD. Blank goes to a 'nodate' folder."),
+                },
+            )
+
+            if st.button("Build zip"):
+                bytes_by_name = {f.name: f.getvalue() for f in up}
+                used = set()
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for _, r in edited.iterrows():
+                        data = bytes_by_name.get(r["File"])
+                        if data is None:
+                            continue
+                        date = str(r["Date"]).strip() or "nodate"
+                        label = _safe(r["Label"])
+                        base = f"{date}/{label}_{date}"
+                        name = base + ".jpg"
+                        n = 2
+                        while name in used:
+                            name = f"{base}_{n}.jpg"
+                            n += 1
+                        used.add(name)
+                        try:
+                            jpg = _to_jpeg_bytes(data)
+                        except Exception:
+                            jpg = data
+                        z.writestr(name, jpg)
+                st.download_button(
+                    "Download zip", buf.getvalue(),
+                    file_name="photos_by_date.zip", mime="application/zip",
+                )
