@@ -13,13 +13,6 @@ try:
 except ImportError:
     ASTRAL_OK = False
 
-# Photo Organizer tab (optional; needs photo_organizer.py + anthropic/pillow).
-try:
-    from photo_organizer import render_photo_organizer
-    PHOTO_OK = True
-except Exception:
-    PHOTO_OK = False
-
 # =========================
 # PAGE SETUP
 # =========================
@@ -484,8 +477,5 @@ with tab_fwmis:
 
 # ---- PHOTOS ----
 with tab_photos:
-    if PHOTO_OK:
-        render_photo_organizer()
-    else:
-        st.subheader("Photo Organizer")
-        st.info("Add photo_organizer.py to the same folder to enable this tab. The rest of the app works without it.")
+    st.subheader("Photos")
+    st.info("Placeholder for now. A free way to sort field photos by date and label will go here later.")
