@@ -357,6 +357,8 @@ def _exif_date(data):
         pass
     return ""
 
+TIME_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?(?:\s*[-+]\d{1,2}:?\d{2})?")
+
 def _parse_date(text):
     m = DATE_RE.search(text)
     if not m:
@@ -366,19 +368,30 @@ def _parse_date(text):
     except Exception:
         return ""
 
-def _label_from_text(text, date_str):
+def _label_from_text(text):
     t = re.sub(r"\s+", " ", text)
-    if date_str:
-        t = DATE_RE.sub("", t)
+    t = DATE_RE.sub("", t)
+    t = TIME_RE.sub("", t)
     t = re.sub(r"[^A-Za-z0-9 _-]", "", t)
     t = re.sub(r"\s+", "_", t).strip("_").lower()
     return t[:40] or "photo"
 
 @st.cache_data(show_spinner=False)
-def ocr_photo(data: bytes):
-    text = pytesseract.image_to_string(_open_image(data))
-    date = _parse_date(text) or _exif_date(data)
-    label = _label_from_text(text, date)
+def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.12):
+    img = _open_image(data)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    if mode == "banner":
+        top = int(h * (1 - band))
+        label_img = img.crop((0, top, int(w * 0.66), h))       # left + middle
+        date_img = img.crop((int(w * 0.60), top, w, h))        # right corner
+        label = _label_from_text(pytesseract.image_to_string(label_img))
+        date = _parse_date(pytesseract.image_to_string(date_img)) or _exif_date(data)
+    else:
+        text = pytesseract.image_to_string(img)
+        label = _label_from_text(text)
+        date = _parse_date(text) or _exif_date(data)
     return label, date
 
 def _safe(name):
@@ -581,6 +594,16 @@ with tab_photos:
             "On Windows install the UB Mannheim build, then restart the app."
         )
     else:
+        mode_label = st.radio(
+            "Text location",
+            ["Bottom banner (Context Camera)", "Whole photo"],
+            horizontal=True,
+        )
+        mode = "banner" if mode_label.startswith("Bottom") else "whole"
+        band = 0.12
+        if mode == "banner":
+            band = st.slider("Banner height (%)", 5, 25, 12) / 100
+
         up = st.file_uploader(
             "Upload the day's photos",
             type=["jpg", "jpeg", "png", "heic", "heif"],
@@ -591,7 +614,7 @@ with tab_photos:
             rows = []
             with st.spinner(f"Reading {len(up)} photos..."):
                 for f in up:
-                    label, date = ocr_photo(f.getvalue())
+                    label, date = ocr_photo(f.getvalue(), mode, band)
                     rows.append({"File": f.name, "Label": label, "Date": date})
 
             st.caption("Check the label and date, edit anything the OCR got wrong.")
