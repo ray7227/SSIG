@@ -348,9 +348,11 @@ def _to_jpeg_bytes(data):
 def _exif_date(data):
     try:
         img = _open_image(data)
-        exif = img._getexif() or {}
-        tags = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
-        raw = tags.get("DateTimeOriginal") or tags.get("DateTime")
+        exif = img.getexif()
+        raw = exif.get(306)  # DateTime
+        if not raw:
+            ifd = exif.get_ifd(0x8769)  # Exif IFD
+            raw = ifd.get(36867)  # DateTimeOriginal
         if raw:
             return datetime.strptime(str(raw)[:10], "%Y:%m:%d").strftime("%Y-%m-%d")
     except Exception:
@@ -376,28 +378,30 @@ def _label_from_text(text):
     t = re.sub(r"\s+", "_", t).strip("_").lower()
     return t[:40] or "photo"
 
-def _prep(im):
+def _prep(im, thr=205):
     # Sharpen white banner text: grayscale, upscale, threshold to black-on-white.
     g = im.convert("L")
     g = g.resize((g.width * 2, g.height * 2))
-    return g.point(lambda p: 0 if p > 165 else 255)
+    return g.point(lambda p: 0 if p > thr else 255)
 
 @st.cache_data(show_spinner=False)
-def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.12):
+def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.08):
     img = _open_image(data)
     if img.mode != "RGB":
         img = img.convert("RGB")
     w, h = img.size
     if mode == "banner":
         top = int(h * (1 - band))
-        label_img = img.crop((0, top, int(w * 0.60), h))       # left + middle
-        date_img = img.crop((int(w * 0.60), top, w, h))        # right corner
+        label_img = img.crop((0, top, int(w * 0.66), h))       # left + middle
+        date_img = img.crop((int(w * 0.66), top, w, h))        # right corner
         label = _label_from_text(
-            pytesseract.image_to_string(_prep(label_img), config="--psm 6")
+            pytesseract.image_to_string(_prep(label_img, 205), config="--psm 6")
         )
-        date = _parse_date(
-            pytesseract.image_to_string(_prep(date_img), config="--psm 6")
-        ) or _exif_date(data)
+        date_txt = pytesseract.image_to_string(
+            _prep(date_img, 185),
+            config="--psm 6 -c tessedit_char_whitelist=0123456789-:",
+        )
+        date = _parse_date(date_txt) or _exif_date(data)
     else:
         text = pytesseract.image_to_string(img)
         label = _label_from_text(text)
@@ -610,9 +614,7 @@ with tab_photos:
             horizontal=True,
         )
         mode = "banner" if mode_label.startswith("Bottom") else "whole"
-        band = 0.12
-        if mode == "banner":
-            band = st.slider("Banner height (%)", 5, 25, 12) / 100
+        band = 0.08
 
         up = st.file_uploader(
             "Upload the day's photos",
