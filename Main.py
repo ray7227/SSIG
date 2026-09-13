@@ -6,7 +6,9 @@ from zoneinfo import ZoneInfo
 import io
 import re
 import zipfile
+from collections import Counter
 from datetime import datetime, timedelta, time as dtime
+from difflib import get_close_matches
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,6 +35,13 @@ try:
     OCR_LIBS = True
 except Exception:
     OCR_LIBS = False
+
+# Free offline dictionary for merging split words (optional).
+try:
+    from spellchecker import SpellChecker
+    _SPELL = SpellChecker()
+except Exception:
+    _SPELL = None
 
 # =========================
 # PAGE SETUP
@@ -412,6 +421,52 @@ def _safe(name):
     name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name).strip()).strip("_").lower()
     return name or "photo"
 
+def _is_word(w):
+    if _SPELL is None or len(w) < 3:
+        return False
+    return len(_SPELL.known([w])) == 1
+
+def _merge_tokens(tokens):
+    # Rejoin words OCR split apart, e.g. ['p', 'lacement'] -> ['placement'].
+    out = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if i + 1 < len(tokens):
+            joined = t + tokens[i + 1]
+            if _is_word(joined) and (not _is_word(t) or not _is_word(tokens[i + 1])):
+                out.append(joined)
+                i += 2
+                continue
+        out.append(t)
+        i += 1
+    return out
+
+def clean_labels(labels):
+    # 1) Rejoin split words. 2) Fix garbled tokens against the batch vocabulary.
+    merged = ["_".join(_merge_tokens([t for t in l.split("_") if t])) for l in labels]
+    toks = []
+    for l in merged:
+        toks += [t for t in l.split("_") if t]
+    counts = Counter(toks)
+    n = len(labels)
+    thresh = max(2, round(n * 0.2))
+    common = [t for t, c in counts.items() if c >= thresh and len(t) >= 2 and not t.isdigit()]
+    cset = set(common)
+    out = []
+    for l in merged:
+        parts = []
+        for t in l.split("_"):
+            if not t:
+                continue
+            if t in cset or len(t) < 2 or t.isdigit():
+                parts.append(t)
+                continue
+            m = get_close_matches(t, common, n=1, cutoff=0.8)
+            parts.append(m[0] if m else t)
+        out.append("_".join(parts) or "photo")
+    return out
+
 # =========================
 # UI
 # =========================
@@ -628,6 +683,11 @@ with tab_photos:
                 for f in up:
                     label, date = ocr_photo(f.getvalue(), mode, band)
                     rows.append({"File": f.name, "Label": label, "Date": date})
+
+            if st.checkbox("Auto-fix odd labels using the rest of the batch", value=True) and len(rows) > 1:
+                fixed = clean_labels([r["Label"] for r in rows])
+                for r, fl in zip(rows, fixed):
+                    r["Label"] = fl
 
             st.caption("Check the label and date, edit anything the OCR got wrong.")
             edited = st.data_editor(
