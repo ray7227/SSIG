@@ -5,3 +5,4 @@ astral
 pillow
 pillow-heif
 pytesseract
+pyspellchecker
