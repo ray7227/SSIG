@@ -672,60 +672,78 @@ with tab_photos:
         band = 0.08
 
         up = st.file_uploader(
-            "Upload the day's photos",
-            type=["jpg", "jpeg", "png", "heic", "heif"],
+            "Upload photos or zip files",
+            type=["jpg", "jpeg", "png", "heic", "heif", "zip"],
             accept_multiple_files=True,
             key="photo_up",
         )
         if up:
-            rows = []
-            with st.spinner(f"Reading {len(up)} photos..."):
-                for f in up:
-                    label, date = ocr_photo(f.getvalue(), mode, band)
-                    rows.append({"File": f.name, "Label": label, "Date": date})
+            IMG_EXT = (".jpg", ".jpeg", ".png", ".heic", ".heif")
+            items = []  # (display_name, image_bytes)
+            for f in up:
+                if f.name.lower().endswith(".zip"):
+                    try:
+                        with zipfile.ZipFile(io.BytesIO(f.getvalue())) as z:
+                            for info in z.infolist():
+                                nm = info.filename
+                                base = nm.split("/")[-1]
+                                if info.is_dir() or "__MACOSX" in nm or base.startswith("."):
+                                    continue
+                                if nm.lower().endswith(IMG_EXT):
+                                    items.append((base, z.read(info)))
+                    except Exception as e:
+                        st.error(f"{f.name}: {e}")
+                else:
+                    items.append((f.name, f.getvalue()))
 
-            if st.checkbox("Auto-fix odd labels using the rest of the batch", value=True) and len(rows) > 1:
-                fixed = clean_labels([r["Label"] for r in rows])
-                for r, fl in zip(rows, fixed):
-                    r["Label"] = fl
+            if not items:
+                st.info("No images found in the upload.")
+            else:
+                rows = []
+                with st.spinner(f"Reading {len(items)} photos..."):
+                    for name, data in items:
+                        label, date = ocr_photo(data, mode, band)
+                        rows.append({"File": name, "Label": label, "Date": date})
 
-            st.caption("Check the label and date, edit anything the OCR got wrong.")
-            edited = st.data_editor(
-                pd.DataFrame(rows),
-                use_container_width=True,
-                num_rows="fixed",
-                key="photo_editor",
-                column_config={
-                    "File": st.column_config.TextColumn(disabled=True),
-                    "Label": st.column_config.TextColumn(),
-                    "Date": st.column_config.TextColumn(help="YYYY-MM-DD. Blank goes to a 'nodate' folder."),
-                },
-            )
+                if st.checkbox("Auto-fix odd labels using the rest of the batch", value=True) and len(rows) > 1:
+                    fixed = clean_labels([r["Label"] for r in rows])
+                    for r, fl in zip(rows, fixed):
+                        r["Label"] = fl
 
-            if st.button("Build zip"):
-                bytes_by_name = {f.name: f.getvalue() for f in up}
-                used = set()
-                buf = io.BytesIO()
-                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                    for _, r in edited.iterrows():
-                        data = bytes_by_name.get(r["File"])
-                        if data is None:
-                            continue
-                        date = str(r["Date"]).strip() or "nodate"
-                        label = _safe(r["Label"])
-                        base = f"{date}/{label}_{date}"
-                        name = base + ".jpg"
-                        n = 2
-                        while name in used:
-                            name = f"{base}_{n}.jpg"
-                            n += 1
-                        used.add(name)
-                        try:
-                            jpg = _to_jpeg_bytes(data)
-                        except Exception:
-                            jpg = data
-                        z.writestr(name, jpg)
-                st.download_button(
-                    "Download zip", buf.getvalue(),
-                    file_name="photos_by_date.zip", mime="application/zip",
+                st.caption("Check the label and date, edit anything the OCR got wrong.")
+                edited = st.data_editor(
+                    pd.DataFrame(rows),
+                    use_container_width=True,
+                    num_rows="fixed",
+                    key="photo_editor",
+                    column_config={
+                        "File": st.column_config.TextColumn(disabled=True),
+                        "Label": st.column_config.TextColumn(),
+                        "Date": st.column_config.TextColumn(help="YYYY-MM-DD. Blank goes to a 'nodate' folder."),
+                    },
                 )
+
+                if st.button("Build zip"):
+                    used = set()
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                        for pos, (_, r) in enumerate(edited.iterrows()):
+                            data = items[pos][1]
+                            date = str(r["Date"]).strip() or "nodate"
+                            label = _safe(r["Label"])
+                            base = f"{date}/{label}_{date}"
+                            name = base + ".jpg"
+                            k = 2
+                            while name in used:
+                                name = f"{base}_{k}.jpg"
+                                k += 1
+                            used.add(name)
+                            try:
+                                jpg = _to_jpeg_bytes(data)
+                            except Exception:
+                                jpg = data
+                            z.writestr(name, jpg)
+                    st.download_button(
+                        "Download zip", buf.getvalue(),
+                        file_name="photos_by_date.zip", mime="application/zip",
+                    )
