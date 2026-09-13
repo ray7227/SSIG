@@ -2,3 +2,6 @@ streamlit
 pandas
 openpyxl
 astral
+pillow
+pillow-heif
+pytesseract
