@@ -781,15 +781,16 @@ def caption_photo(data, caption, coords="", when=""):
 @st.cache_data(show_spinner=False, ttl=86400)
 def geocode_place(q):
     url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
-        {"name": q, "count": 5, "language": "en", "format": "json"}
+        {"name": q, "count": 10, "language": "en", "format": "json"}
     )
     with urllib.request.urlopen(url, timeout=10) as r:
         data = json.loads(r.read().decode())
     res = data.get("results") or []
     if not res:
         raise ValueError("no result")
+    ab = [x for x in res if x.get("country_code") == "CA" and x.get("admin1") == "Alberta"]
     ca = [x for x in res if x.get("country_code") == "CA"]
-    pick = ca[0] if ca else res[0]
+    pick = (ab or ca or res)[0]
     return pick["latitude"], pick["longitude"]
 
 def shapefile_centroid(uploaded):
