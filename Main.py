@@ -850,15 +850,15 @@ def location_picker(key="loc"):
     else:
         st.caption("Install geopandas or gpxpy to drop GIS files here.")
 
-    if GEOPY_OK:
-        q = st.text_input("Or search a place", key=f"{key}_q", placeholder="e.g. Fort McMurray, AB")
-        if st.button("Find place", key=f"{key}_find") and q.strip():
-            try:
-                la, lo = geocode_place(q.strip())
-                ss[pk_lat], ss[pk_lon] = la, lo
-                ss[tk] = []
-            except Exception as e:
-                st.warning(f"Not found: {e}")
+    q = st.text_input("Or search a place", key=f"{key}_q", placeholder="e.g. Grande Prairie, AB")
+    if st.button("Find place", key=f"{key}_find") and q.strip():
+        try:
+            la, lo = geocode_place(q.strip())
+            ss[pk_lat], ss[pk_lon] = la, lo
+            ss[tk] = []
+            ss["gpx_waypoints"] = []
+        except Exception as e:
+            st.warning(f"Not found: {e}")
 
     lat = st.number_input("Latitude", value=float(ss[pk_lat]), format="%.5f")
     lon = st.number_input("Longitude", value=float(ss[pk_lon]), format="%.5f")
