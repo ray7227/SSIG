@@ -7,3 +7,6 @@ pillow-heif
 pytesseract
 pyspellchecker
 python-docx
+geopandas
+geopy
+gpxpy
