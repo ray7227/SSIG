@@ -6,3 +6,4 @@ pillow
 pillow-heif
 pytesseract
 pyspellchecker
+python-docx
