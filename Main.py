@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 
 import io
 import json
+import os
 import re
+import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
@@ -28,7 +30,7 @@ except ImportError:
 # Free local OCR for the Photos tab (needs Tesseract installed on the machine).
 try:
     import pytesseract
-    from PIL import Image, ExifTags
+    from PIL import Image, ExifTags, ImageDraw, ImageFont
     from dateutil import parser as dateparser
     try:
         import pillow_heif
@@ -46,15 +48,35 @@ try:
 except Exception:
     _SPELL = None
 
+# Optional GIS libs for the custom location picker.
+try:
+    import geopandas as gpd
+    GEO_OK = True
+except Exception:
+    GEO_OK = False
+
+try:
+    from geopy.geocoders import Nominatim
+    _GEOCODER = Nominatim(user_agent="aim-field-assistant")
+    GEOPY_OK = True
+except Exception:
+    GEOPY_OK = False
+
+try:
+    import gpxpy
+    GPX_OK = True
+except Exception:
+    GPX_OK = False
+
 # =========================
 # PAGE SETUP
 # =========================
 st.set_page_config(
-    page_title="SSIG Assistant",
-    page_icon="🦉",
+    page_title="AiM Field Assistant",
+    page_icon="🧭",
     layout="wide",
 )
-st.title("SSIG Field Survey Assistant")
+st.title("AiM Field Assistant")
 
 SSIG_PDF = "https://open.alberta.ca/dataset/93d8a251-4a9a-428f-ad99-7484c6ebabe0/resource/f4024e81-b835-4a50-8fb1-5b31d9726b84/download/2013-sensitivespeciesinventoryguidelines-apr18.pdf"
 SWEEP_PDF = "https://open.alberta.ca/dataset/d15221f2-f6d8-4671-8b49-d8fff6eab2b6/resource/6968392a-9e05-4bd8-bd76-ea107ba86c1c/download/aep-wildlife-sweep-protocols-sensitive-species-inventory-guidelines-2020.pdf"
@@ -80,7 +102,7 @@ LOCATIONS = {
     "Lethbridge": (49.69, -112.83),
     "Fort McMurray": (56.73, -111.38),
     "Fort St. John, BC": (56.25, -120.85),
-    "Custom": None,
+    "Custom / map": None,
 }
 
 # =========================
@@ -688,6 +710,137 @@ def build_docx(title, header_lines, sections):
     return bio.getvalue()
 
 # =========================
+# LOCATION PICKER (place search, shapefile, map)
+# =========================
+def gpx_points(data_bytes):
+    g = gpxpy.parse(data_bytes.decode("utf-8", "ignore"))
+    pts = [(p.latitude, p.longitude) for t in g.tracks for s in t.segments for p in s.points]
+    for r in g.routes:
+        pts += [(p.latitude, p.longitude) for p in r.points]
+    wpts = [(w.latitude, w.longitude, w.name or "") for w in g.waypoints]
+    return pts, wpts
+
+def _load_font(size):
+    for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf", "Arial.ttf"]:
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+def _outline(draw, xy, text, font):
+    x, y = xy
+    for dx in (-2, -1, 0, 1, 2):
+        for dy in (-2, -1, 0, 1, 2):
+            if dx or dy:
+                draw.text((x + dx, y + dy), text, font=font, fill="black")
+    draw.text((x, y), text, font=font, fill="white")
+
+def caption_photo(data, caption, coords="", when=""):
+    img = _open_image(data).convert("RGB")
+    W, H = img.size
+    draw = ImageDraw.Draw(img)
+    fs = max(20, W // 40)
+    font = _load_font(fs)
+    pad = fs
+    if caption:
+        _outline(draw, (pad, H - pad - fs), caption, font)
+    right = [l for l in [coords, when] if l]
+    y = H - pad - fs * len(right) - (len(right) - 1) * 4 if right else 0
+    for line in right:
+        w = draw.textlength(line, font=font)
+        _outline(draw, (W - pad - w, y), line, font)
+        y += fs + 4
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+def geocode_place(q):
+    loc = _GEOCODER.geocode(q, timeout=10)
+    if not loc:
+        raise ValueError("no result")
+    return loc.latitude, loc.longitude
+
+def shapefile_centroid(uploaded):
+    data = uploaded.getvalue()
+    name = uploaded.name.lower()
+    with tempfile.TemporaryDirectory() as tmp:
+        if name.endswith(".zip"):
+            p = os.path.join(tmp, "in.zip")
+            with open(p, "wb") as fh:
+                fh.write(data)
+            gdf = gpd.read_file("zip://" + p)
+        else:
+            ext = os.path.splitext(name)[1] or ".geojson"
+            p = os.path.join(tmp, "in" + ext)
+            with open(p, "wb") as fh:
+                fh.write(data)
+            gdf = gpd.read_file(p)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(4326, allow_override=True)
+    gdf = gdf.to_crs(4326)
+    geom = gdf.geometry.union_all() if hasattr(gdf.geometry, "union_all") else gdf.geometry.unary_union
+    c = geom.centroid
+    return float(c.y), float(c.x)
+
+def location_picker(key="loc"):
+    ss = st.session_state
+    pk_lat, pk_lon, tk = f"{key}_platlat", f"{key}_platlon", f"{key}_track"
+    ss.setdefault(pk_lat, 51.05)
+    ss.setdefault(pk_lon, -114.07)
+    ss.setdefault(tk, [])
+
+    up_types = (["gpx"] if GPX_OK else []) + (["zip", "geojson", "json", "kml"] if GEO_OK else [])
+    if up_types:
+        shp = st.file_uploader(
+            "Drop a GPX, shapefile (.zip), GeoJSON, or KML to set the location",
+            type=up_types,
+            key=f"{key}_shp",
+        )
+        if shp is not None:
+            try:
+                if shp.name.lower().endswith(".gpx"):
+                    pts, wpts = gpx_points(shp.getvalue())
+                    ss[tk] = pts
+                    allp = pts + [(a, b) for a, b, _ in wpts]
+                    if allp:
+                        ss[pk_lat] = sum(p[0] for p in allp) / len(allp)
+                        ss[pk_lon] = sum(p[1] for p in allp) / len(allp)
+                        st.caption(f"{len(pts)} track points, {len(wpts)} waypoints loaded.")
+                else:
+                    la, lo = shapefile_centroid(shp)
+                    ss[tk] = []
+                    ss[pk_lat], ss[pk_lon] = la, lo
+                    st.caption(f"Centroid from file: {la:.5f}, {lo:.5f}")
+            except Exception as e:
+                st.warning(f"Couldn't read that file: {e}")
+    else:
+        st.caption("Install geopandas or gpxpy to drop GIS files here.")
+
+    if GEOPY_OK:
+        q = st.text_input("Or search a place", key=f"{key}_q", placeholder="e.g. Fort McMurray, AB")
+        if st.button("Find place", key=f"{key}_find") and q.strip():
+            try:
+                la, lo = geocode_place(q.strip())
+                ss[pk_lat], ss[pk_lon] = la, lo
+                ss[tk] = []
+            except Exception as e:
+                st.warning(f"Not found: {e}")
+
+    lat = st.number_input("Latitude", value=float(ss[pk_lat]), format="%.5f")
+    lon = st.number_input("Longitude", value=float(ss[pk_lon]), format="%.5f")
+    ss[pk_lat], ss[pk_lon] = lat, lon
+
+    map_df = pd.DataFrame(
+        [{"lat": a, "lon": b} for a, b in ss[tk]] + [{"lat": lat, "lon": lon}]
+    )
+    try:
+        st.map(map_df, zoom=10)
+    except Exception:
+        st.map(map_df)
+    return lat, lon
+
+# =========================
 # UI
 # =========================
 tab_plan, tab_ref, tab_photos = st.tabs(["Field Plan", "Reference", "Photos"])
@@ -700,14 +853,14 @@ with tab_plan:
         survey = st.selectbox("Survey", survey_types) if work == "Protocol survey" else None
     with c2:
         loc_name = st.selectbox("Location", list(LOCATIONS.keys()))
-        if LOCATIONS[loc_name] is None:
-            lat = st.number_input("Latitude", value=51.05, format="%.4f")
-            lon = st.number_input("Longitude", value=-114.07, format="%.4f")
-        else:
-            lat, lon = LOCATIONS[loc_name]
     with c3:
         start = st.date_input("Start")
         end = st.date_input("End")
+
+    if LOCATIONS[loc_name] is None:
+        lat, lon = location_picker("planloc")
+    else:
+        lat, lon = LOCATIONS[loc_name]
 
     with st.expander("Safety details"):
         s1, s2 = st.columns(2)
@@ -780,6 +933,22 @@ with tab_ref:
 # ---- PHOTOS ----
 with tab_photos:
     st.subheader("Photos")
+
+    if OCR_LIBS:
+        with st.expander("Caption a photo (type text onto the bottom-left)"):
+            cf = st.file_uploader("Photo", type=["jpg", "jpeg", "png", "heic", "heif"], key="cap_up")
+            cap = st.text_input("Bottom-left caption", key="cap_text")
+            cco = st.text_input("Bottom-right line 1 (e.g. 50.934N 113.963W)", key="cap_coord")
+            cwh = st.text_input("Bottom-right line 2 (e.g. date)", key="cap_when")
+            if cf is not None and st.button("Add caption", key="cap_btn"):
+                out = caption_photo(cf.getvalue(), cap.strip(), cco.strip(), cwh.strip())
+                st.image(out)
+                st.download_button(
+                    "Download captioned photo", out,
+                    file_name="captioned.jpg", mime="image/jpeg", key="cap_dl",
+                )
+    st.divider()
+
     st.caption("Reads the label in each photo, pre-fills a name and date, you fix any misses, then download a zip sorted by date. Free, runs on your machine.")
 
     if not OCR_LIBS:
