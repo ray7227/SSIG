@@ -57,13 +57,6 @@ except Exception:
     GEO_OK = False
 
 try:
-    from geopy.geocoders import Nominatim
-    _GEOCODER = Nominatim(user_agent="aim-field-assistant")
-    GEOPY_OK = True
-except Exception:
-    GEOPY_OK = False
-
-try:
     import gpxpy
     GPX_OK = True
 except Exception:
@@ -785,11 +778,19 @@ def caption_photo(data, caption, coords="", when=""):
     img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
+@st.cache_data(show_spinner=False, ttl=86400)
 def geocode_place(q):
-    loc = _GEOCODER.geocode(q, timeout=10)
-    if not loc:
+    url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
+        {"name": q, "count": 5, "language": "en", "format": "json"}
+    )
+    with urllib.request.urlopen(url, timeout=10) as r:
+        data = json.loads(r.read().decode())
+    res = data.get("results") or []
+    if not res:
         raise ValueError("no result")
-    return loc.latitude, loc.longitude
+    ca = [x for x in res if x.get("country_code") == "CA"]
+    pick = ca[0] if ca else res[0]
+    return pick["latitude"], pick["longitude"]
 
 def shapefile_centroid(uploaded):
     data = uploaded.getvalue()
