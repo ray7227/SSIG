@@ -778,8 +778,24 @@ def caption_photo(data, caption, coords="", when=""):
     img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
-@st.cache_data(show_spinner=False, ttl=86400)
-def geocode_place(q):
+def _geo_photon(q):
+    url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode(
+        {"q": q, "limit": 10, "lat": 54.5, "lon": -114.5, "lang": "en"}
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "aim-field-assistant"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read().decode())
+    feats = data.get("features") or []
+    if not feats:
+        raise ValueError("no result")
+    def score(f):
+        p = f.get("properties", {})
+        return (p.get("state") == "Alberta") * 2 + (p.get("countrycode") == "CA")
+    feats.sort(key=score, reverse=True)
+    lon, lat = feats[0]["geometry"]["coordinates"][:2]
+    return lat, lon
+
+def _geo_openmeteo(q):
     url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
         {"name": q, "count": 10, "language": "en", "format": "json"}
     )
@@ -792,6 +808,13 @@ def geocode_place(q):
     ca = [x for x in res if x.get("country_code") == "CA"]
     pick = (ab or ca or res)[0]
     return pick["latitude"], pick["longitude"]
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def geocode_place(q):
+    try:
+        return _geo_photon(q)
+    except Exception:
+        return _geo_openmeteo(q)
 
 def shapefile_centroid(uploaded):
     data = uploaded.getvalue()
