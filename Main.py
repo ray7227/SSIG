@@ -778,22 +778,12 @@ def caption_photo(data, caption, coords="", when=""):
     img.save(buf, "JPEG", quality=90)
     return buf.getvalue()
 
-def _geo_photon(q):
-    url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode(
-        {"q": q, "limit": 10, "lat": 54.5, "lon": -114.5, "lang": "en"}
-    )
+def _photon_raw(q):
+    params = {"q": q, "limit": 10, "lang": "en", "lat": 54.5, "lon": -114.5}
+    url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "aim-field-assistant"})
     with urllib.request.urlopen(req, timeout=10) as r:
-        data = json.loads(r.read().decode())
-    feats = data.get("features") or []
-    if not feats:
-        raise ValueError("no result")
-    def score(f):
-        p = f.get("properties", {})
-        return (p.get("state") == "Alberta") * 2 + (p.get("countrycode") == "CA")
-    feats.sort(key=score, reverse=True)
-    lon, lat = feats[0]["geometry"]["coordinates"][:2]
-    return lat, lon
+        return json.loads(r.read().decode()).get("features") or []
 
 def _geo_openmeteo(q):
     url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
@@ -811,10 +801,27 @@ def _geo_openmeteo(q):
 
 @st.cache_data(show_spinner=False, ttl=86400)
 def geocode_place(q):
-    try:
-        return _geo_photon(q)
-    except Exception:
-        return _geo_openmeteo(q)
+    ql = q.strip()
+    has_region = bool(re.search(r"alberta|canada|\b(ab|bc|sk|mb|on)\b", ql, re.I))
+    tries = ([ql + ", Alberta, Canada", ql + ", Canada"] if not has_region else []) + [ql]
+    for t in tries:
+        try:
+            feats = _photon_raw(t)
+        except Exception:
+            feats = []
+        if not feats:
+            continue
+        feats.sort(
+            key=lambda f: (f.get("properties", {}).get("state") == "Alberta") * 2
+            + (f.get("properties", {}).get("countrycode") == "CA"),
+            reverse=True,
+        )
+        top = feats[0]
+        if not has_region and top.get("properties", {}).get("countrycode") != "CA":
+            continue
+        lon, lat = top["geometry"]["coordinates"][:2]
+        return lat, lon
+    return _geo_openmeteo(ql)
 
 def shapefile_centroid(uploaded):
     data = uploaded.getvalue()
