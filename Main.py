@@ -4,7 +4,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import io
+import json
 import re
+import urllib.parse
+import urllib.request
 import zipfile
 from collections import Counter
 from datetime import datetime, timedelta, time as dtime
@@ -468,187 +471,311 @@ def clean_labels(labels):
     return out
 
 # =========================
+# WEATHER (free, Open-Meteo, no key)
+# =========================
+WMO = {
+    0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Fog",
+    51: "Drizzle", 53: "Drizzle", 55: "Drizzle", 56: "Freezing drizzle", 57: "Freezing drizzle",
+    61: "Rain", 63: "Rain", 65: "Heavy rain", 66: "Freezing rain", 67: "Freezing rain",
+    71: "Snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Rain showers", 81: "Rain showers", 82: "Heavy showers",
+    85: "Snow showers", 86: "Snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm", 99: "Thunderstorm",
+}
+RAIN_CODES = set(range(51, 68)) | set(range(80, 83)) | {95, 96, 99}
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_weather(lat, lon, start, end):
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max",
+        "timezone": "America/Edmonton",
+        "start_date": start,
+        "end_date": end,
+    }
+    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(url, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+def parse_restrictions(text):
+    t = (text or "").lower()
+    wind = None
+    m = re.search(r"(\d{1,3})\s*km", t)
+    if m:
+        wind = int(m.group(1))
+    temp_min = None
+    m = re.search(r"(?:≥|>=|at least|above)\s*(\d{1,2})\s*°?\s*c", t)
+    if not m:
+        m = re.search(r"(\d{1,2})\s*°?\s*c", t)
+    if m:
+        temp_min = int(m.group(1))
+    no_rain = ("no rain" in t) or ("avoid" in t and "rain" in t)
+    return wind, temp_min, no_rain
+
+# =========================
+# PLAN BUILDER + WORD EXPORT
+# =========================
+try:
+    from docx import Document
+    DOCX_OK = True
+except Exception:
+    DOCX_OK = False
+
+def _sub(text): return {"type": "sub", "text": text}
+def _bul(items): return {"type": "bul", "items": [i for i in items if i]}
+def _par(text): return {"type": "par", "text": text}
+def _tab(cols, rows): return {"type": "tab", "cols": cols, "rows": rows}
+
+def build_plan(work, survey, loc_name, lat, lon, start, end,
+               vehicle, staff_type, water_ice, drive_hr, first_day, prime):
+    before, during, after = [], [], []
+    sr = ss = None
+    is_survey = (work == "Protocol survey")
+    restr = field_value("Weather Restrictions", survey) if is_survey else ""
+    method = field_value("Method", survey) if is_survey else ""
+    crew = field_value("Required Survey Personnel", survey) if is_survey else ""
+    window = field_value("Survey Window", survey) if is_survey else ""
+    tod = field_value("Time of Day", survey) if is_survey else ""
+
+    submit, _ = safety_forms(vehicle, first_day, water_ice, prime, drive_hr, staff_type)
+    before_forms, during_forms = [], []
+    for name, when, where in submit:
+        if when == "First day" or name.startswith("Journey") or name.startswith("Hazard"):
+            before_forms.append((name, when, where))
+        else:
+            during_forms.append((name, when, where))
+
+    # ===== BEFORE =====
+    before.append(_sub("Weather"))
+    if ASTRAL_OK:
+        try:
+            sr, ss = sun_times(lat, lon, start)
+            before.append(_par(f"{start:%b %d}: sunrise {fmt(sr)}, sunset {fmt(ss)} ({loc_name})."))
+        except Exception:
+            sr = ss = None
+    try:
+        wx = fetch_weather(lat, lon, start.isoformat(), end.isoformat())
+        wind_limit, temp_min, no_rain = parse_restrictions(restr)
+        d = wx["daily"]
+        rows = []
+        for i, day in enumerate(d["time"]):
+            code = d["weather_code"][i]; hi = d["temperature_2m_max"][i]; lo = d["temperature_2m_min"][i]
+            wind = d["wind_speed_10m_max"][i]; rain = d["precipitation_sum"][i]
+            flags = []
+            if wind_limit and wind and wind > wind_limit: flags.append("wind")
+            if temp_min and hi is not None and hi < temp_min: flags.append("cold")
+            if no_rain and (code in RAIN_CODES or (rain and rain >= 1)): flags.append("rain")
+            rows.append([day, WMO.get(code, "?"),
+                         round(hi) if hi is not None else "-",
+                         round(lo) if lo is not None else "-",
+                         round(wind) if wind is not None else "-",
+                         round(rain, 1) if rain is not None else "-",
+                         ", ".join(flags) if flags else "OK"])
+        before.append(_tab(["Date", "Cond", "Hi", "Lo", "Wind", "Rain", "Flag"], rows))
+        lim = []
+        if wind_limit: lim.append(f"wind <= {wind_limit} km/h")
+        if temp_min: lim.append(f"temp >= {temp_min} C")
+        if no_rain: lim.append("avoid rain")
+        if lim: before.append(_par("Survey limits: " + ", ".join(lim) + "."))
+    except Exception:
+        before.append(_par("Forecast unavailable (needs internet; reaches about 16 days out)."))
+
+    if is_survey and tod:
+        before.append(_sub("Survey window"))
+        before.append(_bul([f"Window: {window}" if window else "", f"Time of day: {tod}"]))
+
+    before.append(_sub("Before you go"))
+    prep = [f"{n} ({wn}, {wr})" for n, wn, wr in before_forms]
+    prep += ["Confirm access, permits, and landowner contact.",
+             "Set up check-in/out (OkAlone / SPOT / InReach)."]
+    if work == "Clubroot sampling":
+        prep.append("Pack cleaning kit: 2.0% bleach, spray bottle, brushes, picks, boot covers.")
+        prep.append("Build the tract tracker and load KMZ/KML to GPS or Avenza.")
+    if is_survey:
+        prep.append("Review species ID and method in the Reference tab.")
+    before.append(_bul(prep))
+
+    # ===== DURING =====
+    during.append(_sub("The work"))
+    if is_survey:
+        wl = [f"Survey: {survey}", f"Method: {method or '-'}", f"Crew: {crew or '-'}"]
+        if ASTRAL_OK and tod and sr and ss:
+            s0, e0 = compute_window(tod, sr, ss, start)
+            if s0 and e0:
+                wl.append(f"Timing (start day): {fmt(s0)}-{fmt(e0)}")
+        during.append(_bul(wl))
+    elif work == "Wildlife sweep":
+        during.append(_bul([
+            "Walk the footprint plus a 100 m buffer, in daylight.",
+            "Watch for occupied nests, dens, hibernacula, and mineral licks.",
+            "Photograph and GPS any feature without flushing it.",
+        ]))
+    else:
+        during.append(_bul([
+            "Clean at every new tract or ownership change (2.0% bleach).",
+            "Footprint: zigzag, ~100 g, 5 per tract, edges + center, low/wet spots.",
+            "Ag access: 5 in a W pattern. Label, seal, cooler.",
+        ]))
+    during.append(_sub("Daily forms"))
+    during.append(_bul([f"{n} ({wn}, {wr})" for n, wn, wr in during_forms]))
+    if is_survey and restr:
+        during.append(_sub("Watch-outs"))
+        during.append(_par(restr))
+
+    # ===== AFTER =====
+    after.append(_sub("Records"))
+    recs = ["Complete OkAlone / SPOT / InReach check-out.",
+            "Upload GPS tracks, waypoints, photos, and forms to the SharePoint project folder.",
+            "Name files FirstInitialLastName_Activity_Date."]
+    if work == "Clubroot sampling":
+        recs.append("Deliver samples to the lab, update the tracker, assign risk from lab results.")
+    after.append(_bul(recs))
+    if is_survey or work == "Wildlife sweep":
+        after.append(_sub("FWMIS"))
+        after.append(_bul(["Compile every species observed into the FWMIS loadform.",
+                           f"Check tool: {FWMIS_CHECK}", f"Guide: {FWMIS_GUIDE}"]))
+    after.append(_sub("Photos"))
+    after.append(_par("Use the Photos tab to OCR-label and sort field photos by date."))
+    after.append(_sub("Expenses"))
+    after.append(_tab(["Expense", "Vantage Point", "Amount / notes"], [list(r) for r in EXPENSES_INFO]))
+
+    return [("Before", before), ("During", during), ("After", after)]
+
+def render_blocks(blocks):
+    for b in blocks:
+        if b["type"] == "sub":
+            st.markdown(f"**{b['text']}**")
+        elif b["type"] == "bul":
+            for it in b["items"]:
+                st.markdown(f"- {it}")
+        elif b["type"] == "par":
+            st.write(b["text"])
+        elif b["type"] == "tab":
+            st.table(pd.DataFrame(b["rows"], columns=b["cols"]))
+
+def build_docx(title, header_lines, sections):
+    doc = Document()
+    doc.add_heading(title, level=0)
+    for l in header_lines:
+        if l:
+            doc.add_paragraph(l)
+    for name, blocks in sections:
+        doc.add_heading(name, level=1)
+        for b in blocks:
+            if b["type"] == "sub":
+                doc.add_heading(b["text"], level=2)
+            elif b["type"] == "par":
+                doc.add_paragraph(b["text"])
+            elif b["type"] == "bul":
+                for it in b["items"]:
+                    doc.add_paragraph(it, style="List Bullet")
+            elif b["type"] == "tab":
+                t = doc.add_table(rows=1, cols=len(b["cols"]))
+                try:
+                    t.style = "Light Grid Accent 1"
+                except Exception:
+                    pass
+                for j, c in enumerate(b["cols"]):
+                    t.rows[0].cells[j].text = str(c)
+                for r in b["rows"]:
+                    cells = t.add_row().cells
+                    for j, v in enumerate(r):
+                        cells[j].text = str(v)
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
+# =========================
 # UI
 # =========================
-(tab_browse, tab_sweep, tab_clubroot, tab_compare, tab_search,
- tab_plan, tab_expenses, tab_fwmis, tab_photos) = st.tabs(
-    ["Survey", "Sweep", "Clubroot", "Compare", "Search", "Plan Day",
-     "Expenses", "FWMIS", "Photos"]
-)
+tab_plan, tab_ref, tab_photos = st.tabs(["Field Plan", "Reference", "Photos"])
 
-# ---- SURVEY ----
-with tab_browse:
-    render_browse(df, "browse_survey", get_photo)
-
-# ---- SWEEP ----
-with tab_sweep:
-    if sweep_df is not None:
-        render_browse(sweep_df, "browse_sweep")
-    else:
-        st.subheader("Wildlife Sweep (AEP 2020 protocol)")
-        st.table(pd.DataFrame(SWEEP_INFO, columns=["", "Detail"]))
-        st.caption(
-            "Source: Wildlife Sweep Protocols 2020 (sidebar). Species-specific setback "
-            "distances aren't in this protocol; use the disposition conditions or SSIG."
-        )
-
-# ---- CLUBROOT ----
-with tab_clubroot:
-    st.subheader("Clubroot Sampling")
-    st.table(pd.DataFrame(CLUBROOT_INFO, columns=["", "Detail"]))
-    st.caption("Source: AiM Clubroot Sampling SOP (AB_C_E002).")
-
-# ---- COMPARE ----
-with tab_compare:
-    picks = st.multiselect(
-        "Survey types to compare",
-        survey_types,
-        default=survey_types[:2],
-        key="compare_picks",
-    )
-    if picks:
-        for field in fields:
-            values = [get_value(field, s) for s in picks]
-            if not any(values):
-                continue
-            st.markdown(f"### {field}")
-            cols = st.columns(len(picks))
-            for col, survey, value in zip(cols, picks, values):
-                with col:
-                    st.caption(survey)
-                    st.write(value if value else "Not specified")
-            st.divider()
-    else:
-        st.info("Pick at least one survey type.")
-
-# ---- SEARCH ----
-with tab_search:
-    query = st.text_input(
-        "Search all guidelines",
-        placeholder="wind, sunset, egg searches, temperature, transect...",
-        key="search_query",
-    )
-    if query.strip():
-        q = query.strip().lower()
-        hits = []
-        for field in fields:
-            for survey in survey_types:
-                value = get_value(field, survey)
-                if value and q in value.lower():
-                    hits.append((survey, field, value))
-        if hits:
-            st.caption(f"{len(hits)} match(es)")
-            for survey, field, value in hits:
-                st.markdown(f"**{field}  ·  {survey}**")
-                st.write(value)
-                st.divider()
-        else:
-            st.info("No matches.")
-
-# ---- PLAN DAY ----
+# ---- FIELD PLAN ----
 with tab_plan:
-    mode = st.radio(
-        "Mode", ["Wildlife sweep", "Protocol survey"], horizontal=True, key="plan_mode"
-    )
-
-    # Shared safety inputs (both modes)
     c1, c2, c3 = st.columns(3)
     with c1:
-        plan_date = st.date_input("Date", key="plan_date")
-        vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
-        staff_type = st.selectbox(
-            "Staff type", ["Field", "Remote"],
-            help="Sets Hazard ID frequency: field = monthly, remote = yearly.",
-        )
+        work = st.selectbox("Work type", ["Protocol survey", "Wildlife sweep", "Clubroot sampling"])
+        survey = st.selectbox("Survey", survey_types) if work == "Protocol survey" else None
     with c2:
-        water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
-        drive_hr = st.number_input("Drive one-way (hr)", min_value=0.0, value=0.0, step=0.5)
+        loc_name = st.selectbox("Location", list(LOCATIONS.keys()))
+        if LOCATIONS[loc_name] is None:
+            lat = st.number_input("Latitude", value=51.05, format="%.4f")
+            lon = st.number_input("Longitude", value=-114.07, format="%.4f")
+        else:
+            lat, lon = LOCATIONS[loc_name]
     with c3:
-        first_day = st.checkbox("First day of project")
-        prime = st.checkbox(
-            "AiM is Prime Contractor",
-            help=(
-                "Only when AiM is Prime Contractor on a site with multiple trades "
-                "or subcontractors working under us (e.g. large construction). "
-                "Rare for standalone wildlife surveys. Submitted as the FLHA Tailgate."
-            ),
-        )
+        start = st.date_input("Start")
+        end = st.date_input("End")
 
-    if mode == "Protocol survey":
-        lc1, lc2 = st.columns(2)
-        with lc1:
-            loc_name = st.selectbox("Location", list(LOCATIONS.keys()), key="plan_loc")
-        with lc2:
-            if LOCATIONS[loc_name] is None:
-                lat = st.number_input("Latitude", value=51.05, format="%.4f")
-                lon = st.number_input("Longitude", value=-114.07, format="%.4f")
-            else:
-                lat, lon = LOCATIONS[loc_name]
-        site_type = st.radio("Site type", ["Non-linear", "Linear"], horizontal=True)
+    with st.expander("Safety details"):
+        s1, s2 = st.columns(2)
+        with s1:
+            vehicle = st.selectbox("Vehicle", ["AiM-owned", "Personal", "Rental", "None"])
+            staff_type = st.selectbox("Staff type", ["Field", "Remote"])
+            water_ice = st.selectbox("Water / ice work", ["None", "Water", "Ice"])
+        with s2:
+            drive_hr = st.number_input("Drive one-way (hr)", min_value=0.0, value=0.0, step=0.5)
+            first_day = st.checkbox("First day of project")
+            prime = st.checkbox("AiM is Prime Contractor")
 
-        plan_surveys = st.multiselect("Surveys this day", survey_types, key="plan_surveys")
-
-        if not ASTRAL_OK:
-            st.warning("Add 'astral' to requirements.txt to compute sunrise/sunset.")
-
-        if plan_surveys:
-            sunrise = sunset = None
-            if ASTRAL_OK:
-                sunrise, sunset = sun_times(lat, lon, plan_date)
-
-            st.markdown(f"### {plan_date:%b %d, %Y}  ·  {loc_name}")
-            bits = [f"{site_type} site"]
-            if ASTRAL_OK:
-                bits = [f"Sunrise {fmt(sunrise)}", f"Sunset {fmt(sunset)}"] + bits
-            st.caption("  ·  ".join(bits))
-
-            rows = []
-            for s in plan_surveys:
-                rule = field_value("Time of Day", s)
-                start = end = None
-                if ASTRAL_OK and rule:
-                    start, end = compute_window(rule, sunrise, sunset, plan_date)
-                when = f"{fmt(start)}-{fmt(end)}" if (start and end) else (rule or "-")
-                rows.append({
-                    "Survey": s,
-                    "What": field_value("Method", s) or "-",
-                    "When": when,
-                    "Crew": field_value("Required Survey Personnel", s) or "-",
-                    "_sort": start.timestamp() if start else float("inf"),
-                })
-            rows.sort(key=lambda r: r["_sort"])
-            st.table(pd.DataFrame([{k: v for k, v in r.items() if k != "_sort"} for r in rows]))
+    if end < start:
+        st.warning("End date is before start date.")
     else:
-        st.markdown(f"### {plan_date:%b %d, %Y}  ·  Wildlife sweep")
-        st.caption(
-            "Runs on the construction / disturbance schedule, not SSIG timing windows. "
-            "See Wildlife Sweep Protocols in the sidebar."
-        )
+        sections = build_plan(work, survey, loc_name, lat, lon, start, end,
+                              vehicle, staff_type, water_ice, drive_hr, first_day, prime)
+        title = f"Field Plan - {survey or work}"
+        header = [f"Work: {work}", f"Survey: {survey}" if survey else "",
+                  f"Location: {loc_name}", f"Dates: {start:%b %d} to {end:%b %d, %Y}"]
 
-    # Forms (both modes)
-    submit, as_needed = safety_forms(vehicle, first_day, water_ice, prime, drive_hr, staff_type)
-    st.markdown("**Forms to submit**")
-    st.table(pd.DataFrame(submit, columns=["Form", "When", "Where"]))
-    st.caption(f"As needed: {as_needed}")
+        if DOCX_OK:
+            st.download_button(
+                "Download Word plan",
+                build_docx(title, header, sections),
+                file_name=f"field_plan_{start.isoformat()}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        else:
+            st.caption("Add python-docx to requirements.txt to enable the Word download.")
 
-# ---- EXPENSES ----
-with tab_expenses:
-    st.subheader("Expenses - Vantage Point")
-    st.caption("What to pick in Vantage Point for common field expenses.")
-    st.table(pd.DataFrame(EXPENSES_INFO, columns=["Expense", "Pick in Vantage Point", "Amount / notes"]))
-    st.caption("Calgary office work truck = Truck ID 1601.")
+        tb, td, ta = st.tabs(["Before", "During", "After"])
+        for tab, (name, blocks) in zip([tb, td, ta], sections):
+            with tab:
+                render_blocks(blocks)
 
-# ---- FWMIS ----
-with tab_fwmis:
-    st.subheader("FWMIS Post-Field Submission")
-    st.markdown("**Goal**")
-    st.write(
-        "After a sweep or survey, compile every species observed into the FWMIS "
-        "loadform for upload. (Species compiler and loadform export will live here.)"
-    )
-    st.markdown("**Links**")
-    st.markdown(f"- [FWMIS loadform check tool]({FWMIS_CHECK})")
-    st.markdown(f"- [FWMIS Data Submission Guide]({FWMIS_GUIDE})")
+# ---- REFERENCE ----
+with tab_ref:
+    ref = st.radio("Reference", ["Survey", "Sweep", "Clubroot", "Search"], horizontal=True)
+    if ref == "Survey":
+        render_browse(df, "ref_survey", get_photo)
+    elif ref == "Sweep":
+        if sweep_df is not None:
+            render_browse(sweep_df, "ref_sweep")
+        else:
+            st.table(pd.DataFrame(SWEEP_INFO, columns=["", "Detail"]))
+            st.caption("Source: Wildlife Sweep Protocols 2020 (sidebar).")
+    elif ref == "Clubroot":
+        st.table(pd.DataFrame(CLUBROOT_INFO, columns=["", "Detail"]))
+        st.caption("Source: AiM Clubroot Sampling SOP (AB_C_E002).")
+    else:
+        query = st.text_input("Search all guidelines", placeholder="wind, sunset, egg searches, transect...")
+        if query.strip():
+            q = query.strip().lower()
+            hits = []
+            for field in fields:
+                for s in survey_types:
+                    value = get_value(field, s)
+                    if value and q in value.lower():
+                        hits.append((s, field, value))
+            if hits:
+                st.caption(f"{len(hits)} match(es)")
+                for s, field, value in hits:
+                    st.markdown(f"**{field}  ·  {s}**")
+                    st.write(value)
+                    st.divider()
+            else:
+                st.info("No matches.")
 
 # ---- PHOTOS ----
 with tab_photos:
@@ -679,7 +806,7 @@ with tab_photos:
         )
         if up:
             IMG_EXT = (".jpg", ".jpeg", ".png", ".heic", ".heif")
-            items = []  # (display_name, image_bytes, source_zip_or_None)
+            items = []
             for f in up:
                 if f.name.lower().endswith(".zip"):
                     src = f.name[:-4]
