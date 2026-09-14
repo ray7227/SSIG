@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import io
 import json
+import math
 import os
 import re
 import tempfile
@@ -392,6 +393,35 @@ def _exif_date(data):
     except Exception:
         pass
     return ""
+
+def _dms(vals, ref):
+    if not vals:
+        return None
+    d, m, s = [float(x) for x in vals]
+    v = d + m / 60 + s / 3600
+    return -v if ref in ("S", "W") else v
+
+def _exif_gps(data):
+    try:
+        exif = _open_image(data).getexif()
+        gps = exif.get_ifd(0x8825)
+        if not gps:
+            return None
+        lat = _dms(gps.get(2), gps.get(1))
+        lon = _dms(gps.get(4), gps.get(3))
+        if lat is None or lon is None:
+            return None
+        return lat, lon
+    except Exception:
+        return None
+
+def _dist_m(a, b):
+    R = 6371000
+    lat1, lon1 = map(math.radians, a)
+    lat2, lon2 = map(math.radians, b)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    x = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(x))
 
 TIME_RE = re.compile(r"\d{1,2}:\d{1,2}(?::\d{1,2})?(?:\s*[-+]\d{1,2}:?\d{2})?")
 
@@ -802,6 +832,7 @@ def location_picker(key="loc"):
                 if shp.name.lower().endswith(".gpx"):
                     pts, wpts = gpx_points(shp.getvalue())
                     ss[tk] = pts
+                    ss["gpx_waypoints"] = wpts
                     allp = pts + [(a, b) for a, b, _ in wpts]
                     if allp:
                         ss[pk_lat] = sum(p[0] for p in allp) / len(allp)
@@ -810,6 +841,7 @@ def location_picker(key="loc"):
                 else:
                     la, lo = shapefile_centroid(shp)
                     ss[tk] = []
+                    ss["gpx_waypoints"] = []
                     ss[pk_lat], ss[pk_lon] = la, lo
                     st.caption(f"Centroid from file: {la:.5f}, {lo:.5f}")
             except Exception as e:
@@ -847,20 +879,25 @@ tab_plan, tab_ref, tab_photos = st.tabs(["Field Plan", "Reference", "Photos"])
 
 # ---- FIELD PLAN ----
 with tab_plan:
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         work = st.selectbox("Work type", ["Protocol survey", "Wildlife sweep", "Clubroot sampling"])
-        survey = st.selectbox("Survey", survey_types) if work == "Protocol survey" else None
-    with c2:
-        loc_name = st.selectbox("Location", list(LOCATIONS.keys()))
-    with c3:
-        start = st.date_input("Start")
-        end = st.date_input("End")
+    survey = None
+    if work == "Protocol survey":
+        with c2:
+            survey = st.selectbox("Survey", survey_types)
 
+    loc_name = st.selectbox("Location", list(LOCATIONS.keys()))
     if LOCATIONS[loc_name] is None:
         lat, lon = location_picker("planloc")
     else:
         lat, lon = LOCATIONS[loc_name]
+
+    d1, d2 = st.columns(2)
+    with d1:
+        start = st.date_input("Start")
+    with d2:
+        end = st.date_input("End")
 
     with st.expander("Safety details"):
         s1, s2 = st.columns(2)
@@ -1006,6 +1043,20 @@ with tab_photos:
                     fixed = clean_labels([r["Label"] for r in rows])
                     for r, fl in zip(rows, fixed):
                         r["Label"] = fl
+
+                wps = st.session_state.get("gpx_waypoints", [])
+                if wps and st.checkbox("Name photos from nearest GPX waypoint (uses photo GPS)", value=False):
+                    for pos, (nm, data, _s) in enumerate(items):
+                        gps = _exif_gps(data)
+                        if not gps:
+                            continue
+                        best, bestd = None, 1e12
+                        for wlat, wlon, wname in wps:
+                            dd = _dist_m(gps, (wlat, wlon))
+                            if dd < bestd:
+                                bestd, best = dd, wname
+                        if best and bestd <= 100:
+                            rows[pos]["Label"] = f"{_safe(best)}_{rows[pos]['Label']}"
 
                 st.caption("Check the label and date, edit anything the OCR got wrong.")
                 edited = st.data_editor(
