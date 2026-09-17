@@ -1119,7 +1119,7 @@ with tab_photos:
                                 folder = f"{srcf}/{date}"
                             else:
                                 folder = date
-                            base = f"{folder}/{label}_{date}"
+                            base = f"{folder}/{label}"
                             name = base + ".jpg"
                             k = 2
                             while name in used:
