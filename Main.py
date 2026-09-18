@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, time as dtime
 from difflib import get_close_matches
 from pathlib import Path
@@ -436,9 +437,11 @@ def _label_from_text(text):
     return t[:40] or "photo"
 
 def _prep(im, thr=205):
-    # Sharpen white banner text: grayscale, upscale, threshold to black-on-white.
+    # Sharpen white banner text: grayscale, threshold to black-on-white.
+    # Only upscale small crops; big phone-photo crops are already sharp enough.
     g = im.convert("L")
-    g = g.resize((g.width * 2, g.height * 2))
+    if g.width < 1200:
+        g = g.resize((g.width * 2, g.height * 2))
     return g.point(lambda p: 0 if p > thr else 255)
 
 @st.cache_data(show_spinner=False)
@@ -450,19 +453,21 @@ def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.08):
     if mode == "banner":
         top = int(h * (1 - band))
         label_img = img.crop((0, top, int(w * 0.66), h))       # left + middle
-        date_img = img.crop((int(w * 0.66), top, w, h))        # right corner
         label = _label_from_text(
             pytesseract.image_to_string(_prep(label_img, 205), config="--psm 6")
         )
-        date_txt = pytesseract.image_to_string(
-            _prep(date_img, 185),
-            config="--psm 6 -c tessedit_char_whitelist=0123456789-:",
-        )
-        date = _parse_date(date_txt) or _exif_date(data)
+        date = _exif_date(data)
+        if not date:
+            date_img = img.crop((int(w * 0.66), top, w, h))    # right corner
+            date_txt = pytesseract.image_to_string(
+                _prep(date_img, 185),
+                config="--psm 6 -c tessedit_char_whitelist=0123456789-:",
+            )
+            date = _parse_date(date_txt)
     else:
         text = pytesseract.image_to_string(img)
         label = _label_from_text(text)
-        date = _parse_date(text) or _exif_date(data)
+        date = _exif_date(data) or _parse_date(text)
     return label, date
 
 def _safe(name):
@@ -1065,11 +1070,13 @@ with tab_photos:
             if not items:
                 st.info("No images found in the upload.")
             else:
-                rows = []
                 with st.spinner(f"Reading {len(items)} photos..."):
-                    for name, data, _src in items:
-                        label, date = ocr_photo(data, mode, band)
-                        rows.append({"File": name, "Label": label, "Date": date})
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        results = list(ex.map(lambda it: ocr_photo(it[1], mode, band), items))
+                rows = [
+                    {"File": items[i][0], "Label": results[i][0], "Date": results[i][1]}
+                    for i in range(len(items))
+                ]
 
                 if st.checkbox("Auto-fix odd labels using the rest of the batch", value=True) and len(rows) > 1:
                     fixed = clean_labels([r["Label"] for r in rows])
