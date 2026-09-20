@@ -374,6 +374,13 @@ def _to_jpeg_bytes(data):
     img.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
 
+@st.cache_data(show_spinner=False)
+def _jpeg_cached(data):
+    try:
+        return _to_jpeg_bytes(data)
+    except Exception:
+        return data
+
 def _exif_date(data):
     try:
         img = _open_image(data)
@@ -1110,35 +1117,29 @@ with tab_photos:
                     },
                 )
 
-                if st.button("Build zip"):
-                    zip_sources = {s for _, _, s in items if s}
-                    multi = len(zip_sources) >= 2
-                    used = set()
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                        for pos, (_, r) in enumerate(edited.iterrows()):
-                            data = items[pos][1]
-                            src = items[pos][2]
-                            date = str(r["Date"]).strip() or "nodate"
-                            label = _safe(r["Label"])
-                            if multi and src:
-                                srcf = re.sub(r'[\\/:*?"<>|]+', "_", src).strip() or "zip"
-                                folder = f"{srcf}/{date}"
-                            else:
-                                folder = date
-                            base = f"{folder}/{label}"
-                            name = base + ".jpg"
-                            k = 2
-                            while name in used:
-                                name = f"{base}_{k}.jpg"
-                                k += 1
-                            used.add(name)
-                            try:
-                                jpg = _to_jpeg_bytes(data)
-                            except Exception:
-                                jpg = data
-                            z.writestr(name, jpg)
-                    st.download_button(
-                        "Download zip", buf.getvalue(),
-                        file_name="photos_by_date.zip", mime="application/zip",
-                    )
+                zip_sources = {s for _, _, s in items if s}
+                multi = len(zip_sources) >= 2
+                used = set()
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                    for pos, (_, r) in enumerate(edited.iterrows()):
+                        src = items[pos][2]
+                        date = str(r["Date"]).strip() or "nodate"
+                        label = _safe(r["Label"])
+                        if multi and src:
+                            srcf = re.sub(r'[\\/:*?"<>|]+', "_", src).strip() or "zip"
+                            folder = f"{srcf}/{date}"
+                        else:
+                            folder = date
+                        base = f"{folder}/{label}"
+                        name = base + ".jpg"
+                        k = 2
+                        while name in used:
+                            name = f"{base}_{k}.jpg"
+                            k += 1
+                        used.add(name)
+                        z.writestr(name, _jpeg_cached(items[pos][1]))
+                st.download_button(
+                    "Download zip", buf.getvalue(),
+                    file_name="photos_by_date.zip", mime="application/zip",
+                )
