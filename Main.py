@@ -45,15 +45,17 @@ try:
 except Exception:
     _SPELL = None
 
-# Optional GIS libs for the custom location picker.
+# Optional GIS libs.
 try:
     import geopandas as gpd
+    from shapely.geometry import Point, LineString
     GEO_OK = True
 except Exception:
     GEO_OK = False
 
 try:
     import gpxpy
+    import gpxpy.gpx
     GPX_OK = True
 except Exception:
     GPX_OK = False
@@ -168,7 +170,6 @@ def get_value(field, survey):
     return str(val).strip()
 
 def field_value(field_query, survey):
-    # match an index label by normalized name, exact first then contains
     for idx in df.index:
         if normalize(idx) == normalize(field_query):
             return get_value(idx, survey)
@@ -220,7 +221,6 @@ def _clock(text):
     return dtime(h, int(m.group(2) or 0))
 
 def _offset(text, anchor):
-    # returns a timedelta if <anchor> is present, else None. Zero if no number given.
     if anchor not in text:
         return None
     m = re.search(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?)\s+" + anchor, text)
@@ -231,10 +231,8 @@ def _offset(text, anchor):
     return timedelta(hours=n) if unit.startswith(("hour", "hr")) else timedelta(minutes=n)
 
 def compute_window(rule, sunrise, sunset, d):
-    """Best-effort start/end from a Time-of-Day rule. Returns (start, end)."""
     t = normalize(rule)
     start = end = None
-
     off = _offset(t, "before sunrise")
     if off is not None:
         start = sunrise - off
@@ -242,11 +240,9 @@ def compute_window(rule, sunrise, sunset, d):
         start = sunrise + off
     elif (off := _offset(t, "after sunset")) is not None:
         start = sunset + off
-
     off = _offset(t, "before sunset")
     if off is not None:
         end = sunset - off
-
     if ("no later than" in t) or ("until" in t):
         tail = t.split("no later than")[-1] if "no later than" in t else t.split("until")[-1]
         c = _clock(tail)
@@ -254,10 +250,8 @@ def compute_window(rule, sunrise, sunset, d):
             end = datetime.combine(d, c).replace(tzinfo=TZ)
             if start and end <= start:
                 end += timedelta(days=1)
-
     if start is None and end is None and "daylight" in t:
         start, end = sunrise, sunset
-
     return start, end
 
 def fmt(dt):
@@ -380,10 +374,10 @@ def _exif_date(data):
     try:
         img = _open_image(data)
         exif = img.getexif()
-        raw = exif.get(306)  # DateTime
+        raw = exif.get(306)
         if not raw:
-            ifd = exif.get_ifd(0x8769)  # Exif IFD
-            raw = ifd.get(36867)  # DateTimeOriginal
+            ifd = exif.get_ifd(0x8769)
+            raw = ifd.get(36867)
         if raw:
             return datetime.strptime(str(raw)[:10], "%Y:%m:%d").strftime("%Y-%m-%d")
     except Exception:
@@ -439,8 +433,6 @@ def _label_from_text(text):
     return t[:40] or "photo"
 
 def _prep(im, thr=205):
-    # Sharpen white banner text: grayscale, threshold to black-on-white.
-    # Only upscale small crops; big phone-photo crops are already sharp enough.
     g = im.convert("L")
     if g.width < 1200:
         g = g.resize((g.width * 2, g.height * 2))
@@ -454,13 +446,13 @@ def ocr_photo(data: bytes, mode: str = "banner", band: float = 0.08):
     w, h = img.size
     if mode == "banner":
         top = int(h * (1 - band))
-        label_img = img.crop((0, top, int(w * 0.66), h))       # left + middle
+        label_img = img.crop((0, top, int(w * 0.66), h))
         label = _label_from_text(
             pytesseract.image_to_string(_prep(label_img, 205), config="--psm 6")
         )
         date = _exif_date(data)
         if not date:
-            date_img = img.crop((int(w * 0.66), top, w, h))    # right corner
+            date_img = img.crop((int(w * 0.66), top, w, h))
             date_txt = pytesseract.image_to_string(
                 _prep(date_img, 185),
                 config="--psm 6 -c tessedit_char_whitelist=0123456789-:",
@@ -482,7 +474,6 @@ def _is_word(w):
     return len(_SPELL.known([w])) == 1
 
 def _merge_tokens(tokens):
-    # Rejoin words OCR split apart, e.g. ['p', 'lacement'] -> ['placement'].
     out = []
     i = 0
     while i < len(tokens):
@@ -498,7 +489,6 @@ def _merge_tokens(tokens):
     return out
 
 def clean_labels(labels):
-    # 1) Rejoin split words. 2) Fix garbled tokens against the batch vocabulary.
     merged = ["_".join(_merge_tokens([t for t in l.split("_") if t])) for l in labels]
     toks = []
     for l in merged:
@@ -599,7 +589,6 @@ def build_plan(work, survey, loc_name, lat, lon, start, end,
         else:
             during_forms.append((name, when, where))
 
-    # ===== BEFORE =====
     before.append(_sub("Weather"))
     if ASTRAL_OK:
         try:
@@ -649,7 +638,6 @@ def build_plan(work, survey, loc_name, lat, lon, start, end,
         prep.append("Review species ID and method in the Reference tab.")
     before.append(_bul(prep))
 
-    # ===== DURING =====
     during.append(_sub("The work"))
     if is_survey:
         wl = [f"Survey: {survey}", f"Method: {method or '-'}", f"Crew: {crew or '-'}"]
@@ -676,7 +664,6 @@ def build_plan(work, survey, loc_name, lat, lon, start, end,
         during.append(_sub("Watch-outs"))
         during.append(_par(restr))
 
-    # ===== AFTER =====
     after.append(_sub("Records"))
     recs = ["Complete OkAlone / SPOT / InReach check-out.",
             "Upload GPS tracks, waypoints, photos, and forms to the SharePoint project folder.",
@@ -739,15 +726,12 @@ def build_docx(title, header_lines, sections):
     doc.save(bio)
     return bio.getvalue()
 
-
 # =========================
 # GIS BUFFER / FOOTPRINT EXPORT
 # =========================
 def _read_gis_upload(uploaded):
-    """Read a zipped shapefile, GeoJSON, JSON, or KML into a GeoDataFrame."""
     data = uploaded.getvalue()
     name = uploaded.name.lower()
-
     with tempfile.TemporaryDirectory() as tmp:
         if name.endswith(".zip"):
             p = os.path.join(tmp, "input.zip")
@@ -760,44 +744,32 @@ def _read_gis_upload(uploaded):
             with open(p, "wb") as fh:
                 fh.write(data)
             gdf = gpd.read_file(p)
-
     if gdf.empty:
         raise ValueError("The uploaded GIS file contains no features.")
     if gdf.crs is None:
         raise ValueError("The uploaded file has no CRS. Define its coordinate system before buffering.")
     return gdf
 
-
 def _best_utm_crs(gdf):
-    """Return a metre-based projected CRS suitable for buffering."""
     try:
         crs = gdf.estimate_utm_crs()
         if crs is not None:
             return crs
     except Exception:
         pass
-    # Alberta 10TM fallback; useful for most Alberta projects.
     return "EPSG:3400"
 
-
 def buffer_gdf(gdf, distance_m):
-    """
-    Dissolve the footprint and buffer outward by distance_m.
-    Output is returned in the source CRS.
-    """
     if distance_m < 0:
         raise ValueError("Buffer distance must be 0 m or greater.")
-
     source_crs = gdf.crs
     work_crs = _best_utm_crs(gdf)
     projected = gdf.to_crs(work_crs)
-
     geom = (
         projected.geometry.union_all()
         if hasattr(projected.geometry, "union_all")
         else projected.geometry.unary_union
     )
-
     out = gpd.GeoDataFrame(
         {"buffer_m": [float(distance_m)]},
         geometry=[geom.buffer(float(distance_m))],
@@ -805,21 +777,121 @@ def buffer_gdf(gdf, distance_m):
     )
     return out.to_crs(source_crs)
 
-
 def gdf_to_shapefile_zip(gdf, base_name="buffer"):
-    """Package a GeoDataFrame as a downloadable zipped ESRI Shapefile."""
     safe_base = re.sub(r"[^A-Za-z0-9_-]+", "_", base_name).strip("_") or "buffer"
-
     with tempfile.TemporaryDirectory() as tmp:
         shp_path = os.path.join(tmp, safe_base + ".shp")
         gdf.to_file(shp_path, driver="ESRI Shapefile")
-
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             for p in Path(tmp).glob(safe_base + ".*"):
                 z.write(p, arcname=p.name)
-
         return buf.getvalue()
+
+# =========================
+# GIS FORMAT CONVERTER
+# =========================
+def _gpx_to_gdf(data):
+    from shapely.geometry import Point, LineString
+    g = gpxpy.parse(data.decode("utf-8", "ignore"))
+    geoms, names = [], []
+    for w in g.waypoints:
+        geoms.append(Point(w.longitude, w.latitude)); names.append(w.name or "")
+    for t in g.tracks:
+        for s in t.segments:
+            c = [(p.longitude, p.latitude) for p in s.points]
+            if len(c) >= 2:
+                geoms.append(LineString(c)); names.append(t.name or "")
+    for r in g.routes:
+        c = [(p.longitude, p.latitude) for p in r.points]
+        if len(c) >= 2:
+            geoms.append(LineString(c)); names.append(r.name or "")
+    if not geoms:
+        raise ValueError("No points or tracks found in the GPX.")
+    return gpd.GeoDataFrame({"name": names}, geometry=geoms, crs=4326)
+
+def _read_any_gis(uploaded):
+    name = uploaded.name.lower()
+    data = uploaded.getvalue()
+    if name.endswith(".gpx"):
+        return _gpx_to_gdf(data)
+    with tempfile.TemporaryDirectory() as tmp:
+        if name.endswith(".zip"):
+            p = os.path.join(tmp, "in.zip")
+            with open(p, "wb") as fh:
+                fh.write(data)
+            gdf = gpd.read_file("zip://" + p)
+        elif name.endswith(".kmz"):
+            zp = os.path.join(tmp, "in.kmz")
+            with open(zp, "wb") as fh:
+                fh.write(data)
+            with zipfile.ZipFile(zp) as z:
+                kmls = [n for n in z.namelist() if n.lower().endswith(".kml")]
+                if not kmls:
+                    raise ValueError("No .kml inside the KMZ.")
+                z.extract(kmls[0], tmp)
+                gdf = gpd.read_file(os.path.join(tmp, kmls[0]))
+        else:
+            ext = os.path.splitext(name)[1] or ".geojson"
+            p = os.path.join(tmp, "in" + ext)
+            with open(p, "wb") as fh:
+                fh.write(data)
+            gdf = gpd.read_file(p)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(4326, allow_override=True)
+    return gdf
+
+def _gdf_to_geojson_bytes(gdf):
+    return gdf.to_crs(4326).to_json().encode("utf-8")
+
+def _gdf_to_kml_bytes(gdf):
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "out.kml")
+        gdf.to_crs(4326).to_file(p, driver="KML")
+        with open(p, "rb") as fh:
+            return fh.read()
+
+def _gdf_to_kmz_bytes(gdf):
+    kml = _gdf_to_kml_bytes(gdf)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("doc.kml", kml)
+    return buf.getvalue()
+
+def _gdf_to_gpx_bytes(gdf):
+    import gpxpy.gpx
+    gdf = gdf.to_crs(4326)
+    g = gpxpy.gpx.GPX()
+    names = gdf["name"] if "name" in gdf.columns else [""] * len(gdf)
+    for geom, nm in zip(gdf.geometry, names):
+        if geom is None:
+            continue
+        gt = geom.geom_type
+
+        def add_line(coords):
+            trk = gpxpy.gpx.GPXTrack(name=str(nm) if nm else None)
+            seg = gpxpy.gpx.GPXTrackSegment()
+            for x, y in coords:
+                seg.points.append(gpxpy.gpx.GPXTrackPoint(latitude=y, longitude=x))
+            trk.segments.append(seg)
+            g.tracks.append(trk)
+
+        if gt == "Point":
+            g.waypoints.append(gpxpy.gpx.GPXWaypoint(latitude=geom.y, longitude=geom.x, name=str(nm) if nm else None))
+        elif gt == "MultiPoint":
+            for pt in geom.geoms:
+                g.waypoints.append(gpxpy.gpx.GPXWaypoint(latitude=pt.y, longitude=pt.x, name=str(nm) if nm else None))
+        elif gt == "LineString":
+            add_line(list(geom.coords))
+        elif gt == "MultiLineString":
+            for ln in geom.geoms:
+                add_line(list(ln.coords))
+        elif gt == "Polygon":
+            add_line(list(geom.exterior.coords))
+        elif gt == "MultiPolygon":
+            for poly in geom.geoms:
+                add_line(list(poly.exterior.coords))
+    return g.to_xml().encode("utf-8")
 
 # =========================
 # LOCATION PICKER (place search, shapefile, map)
@@ -1088,7 +1160,6 @@ with tab_ref:
             else:
                 st.info("No matches.")
 
-
 # ---- GIS TOOLS ----
 with tab_gis:
     st.subheader("Footprint Buffer Tool")
@@ -1109,7 +1180,6 @@ with tab_gis:
             try:
                 footprint_gdf = _read_gis_upload(footprint_file)
 
-                # Basic file summary
                 area_text = ""
                 try:
                     projected = footprint_gdf.to_crs(_best_utm_crs(footprint_gdf))
@@ -1179,6 +1249,40 @@ with tab_gis:
             except Exception as e:
                 st.error(f"Couldn't process footprint: {e}")
 
+    st.divider()
+    st.subheader("Convert format")
+    st.caption("Drop a shapefile (.zip), KML, KMZ, GeoJSON, or GPX and download it in another format.")
+    if not GEO_OK:
+        st.warning("Install geopandas to enable conversion.")
+    else:
+        conv_file = st.file_uploader(
+            "File to convert",
+            type=["zip", "kml", "kmz", "geojson", "json", "gpx"],
+            key="conv_up",
+        )
+        if conv_file is not None:
+            try:
+                cgdf = _read_any_gis(conv_file)
+                st.success(f"Loaded {len(cgdf)} feature(s). CRS: {cgdf.crs}")
+                out_fmt = st.selectbox(
+                    "Convert to",
+                    ["Shapefile (.zip)", "GeoJSON", "KML", "KMZ", "GPX"],
+                    key="conv_fmt",
+                )
+                base = re.sub(r"[^A-Za-z0-9_-]+", "_", os.path.splitext(conv_file.name)[0]).strip("_") or "converted"
+                if out_fmt.startswith("Shapefile"):
+                    data = gdf_to_shapefile_zip(cgdf, base); fn = base + ".zip"; mime = "application/zip"
+                elif out_fmt == "GeoJSON":
+                    data = _gdf_to_geojson_bytes(cgdf); fn = base + ".geojson"; mime = "application/geo+json"
+                elif out_fmt == "KML":
+                    data = _gdf_to_kml_bytes(cgdf); fn = base + ".kml"; mime = "application/vnd.google-earth.kml+xml"
+                elif out_fmt == "KMZ":
+                    data = _gdf_to_kmz_bytes(cgdf); fn = base + ".kmz"; mime = "application/vnd.google-earth.kmz"
+                else:
+                    data = _gdf_to_gpx_bytes(cgdf); fn = base + ".gpx"; mime = "application/gpx+xml"
+                st.download_button(f"Download {out_fmt}", data, file_name=fn, mime=mime, key="conv_dl")
+            except Exception as e:
+                st.error(f"Couldn't convert: {e}")
 
 # ---- PHOTOS ----
 with tab_photos:
