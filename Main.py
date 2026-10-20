@@ -82,6 +82,7 @@ with st.sidebar:
 
 FILE = "SSIG_Breakdown.xlsx"
 SWEEP_FILE = "Sweep_Breakdown.xlsx"
+SETBACKS_FILE = "Setbacks.xlsx"
 TZ = ZoneInfo("America/Edmonton")   # BC Peace users: MST year-round, adjust if needed
 
 # Alberta location presets (lat, lon)
@@ -182,6 +183,14 @@ try:
     sweep_df = load_data(SWEEP_FILE)
 except FileNotFoundError:
     sweep_df = None
+
+try:
+    _sb = pd.ExcelFile(SETBACKS_FILE)
+    SB_AB = _sb.parse("AB_Regional")
+    SB_FED = _sb.parse("Federal")
+    SB_ZONES = _sb.parse("Zones")
+except Exception:
+    SB_AB = SB_FED = SB_ZONES = None
 
 def render_browse(bdf, key, photo_fn=None):
     options = list(bdf.columns)
@@ -1066,9 +1075,95 @@ def location_picker(key="loc"):
     return lat, lon
 
 # =========================
+# SETBACKS
+# =========================
+_SB_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], start=1)}
+
+def _sb_md(tok):
+    p = tok.strip().split()
+    return _SB_MONTHS[p[0][:3].lower()], int(p[1])
+
+def _sb_parse_period(period):
+    p = str(period).strip().lower()
+    if "year" in p:
+        return None
+    a, b = str(period).split("-")
+    return _sb_md(a), _sb_md(b)
+
+def _sb_in_range(d, smd, emd):
+    cur = (d.month, d.day)
+    if smd <= emd:
+        return smd <= cur <= emd
+    return cur >= smd or cur <= emd
+
+def sb_period_applies(period, win_start, win_end):
+    try:
+        rng = _sb_parse_period(period)
+    except Exception:
+        return False
+    if rng is None:
+        return True
+    smd, emd = rng
+    days = min((win_end - win_start).days, 366)
+    for i in range(days + 1):
+        if _sb_in_range(win_start + timedelta(days=i), smd, emd):
+            return True
+    return False
+
+def sb_species_match(sel, cand):
+    stop = {"and", "sites", "site", "nesting", "nest", "active", "the", "of", "or",
+            "surrounding", "habitat", "breeding", "overwintering", "suitable", "den", "dens"}
+    a = {w for w in re.findall(r"[a-z]+", str(sel).lower()) if w not in stop}
+    b = {w for w in re.findall(r"[a-z]+", str(cand).lower()) if w not in stop}
+    inter = a & b
+    return len(inter) >= 1 and any(len(w) >= 4 for w in inter)
+
+@st.cache_data(show_spinner=False)
+def _load_nr_layer():
+    if not GEO_OK:
+        return None
+    for fn in ["natural_regions.zip", "natural_regions.geojson", "natural_regions.json"]:
+        if os.path.isfile(fn):
+            try:
+                g = gpd.read_file("zip://" + fn if fn.endswith(".zip") else fn)
+                return g.to_crs(4326)
+            except Exception:
+                return None
+    return None
+
+def region_from_point(lat, lon):
+    g = _load_nr_layer()
+    if g is None:
+        return None
+    try:
+        from shapely.geometry import Point as _P
+        pt = _P(lon, lat)
+        hit = g[g.contains(pt)]
+        if hit.empty:
+            return None
+        col = next((c for c in ["NRNAME", "NSRNAME", "Region", "NATURAL_RE"] if c in g.columns), None)
+        if not col:
+            return None
+        nr = str(hit.iloc[0][col]).lower()
+        if "grass" in nr or "park" in nr:
+            return "Prairie and Parkland"
+        return "Boreal and Foothills"
+    except Exception:
+        return None
+
+DISTURBANCE_DEFS = [
+    ("Low", "Infrequent, no surface disturbance, short (hours). E.g. surveying, winter-only access roads, pipeline riser operation, powerline operation."),
+    ("Medium", "Frequent, small habitat modification, long (days). E.g. seismic drilling, recreation trails."),
+    ("High", "Frequent, permanent modification, long-term (years). E.g. pipeline/wellsite/road construction, rail, Class I/II access roads, airfields, housing, facilities, powerline construction, gravel pits."),
+]
+
+# =========================
 # UI
 # =========================
-tab_plan, tab_ref, tab_gis, tab_photos = st.tabs(["Field Plan", "Reference", "GIS Tools", "Photos"])
+tab_plan, tab_ref, tab_gis, tab_setbacks, tab_photos = st.tabs(
+    ["Field Plan", "Reference", "GIS Tools", "Setbacks", "Photos"]
+)
 
 # ---- FIELD PLAN ----
 with tab_plan:
@@ -1283,6 +1378,84 @@ with tab_gis:
                 st.download_button(f"Download {out_fmt}", data, file_name=fn, mime=mime, key="conv_dl")
             except Exception as e:
                 st.error(f"Couldn't convert: {e}")
+
+# ---- SETBACKS ----
+with tab_setbacks:
+    st.subheader("Wildlife setbacks")
+    if SB_AB is None:
+        st.info("Add Setbacks.xlsx (sheets: AB_Regional, Federal, Zones) to the app folder.")
+    else:
+        region = st.radio(
+            "Natural region",
+            ["Prairie and Parkland", "Boreal and Foothills"],
+            horizontal=True,
+        )
+        with st.expander("Auto-detect region from a point"):
+            st.caption("Needs natural_regions.zip (AB Natural Regions layer) in the app folder.")
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                alat = st.number_input("Latitude", value=51.05, format="%.5f", key="sb_lat")
+            with ac2:
+                alon = st.number_input("Longitude", value=-114.07, format="%.5f", key="sb_lon")
+            if st.button("Detect region"):
+                r = region_from_point(alat, alon)
+                if r:
+                    st.success(f"Point is in: {r}")
+                else:
+                    st.warning("Couldn't detect (layer missing or point outside Alberta). Pick manually.")
+
+        ab_reg = SB_AB[SB_AB["Region"] == region]
+        species = st.selectbox("Species", sorted(ab_reg["Species"].unique()))
+        feats = sorted(ab_reg[ab_reg["Species"] == species]["Feature"].unique())
+        feature = st.selectbox("Feature", feats)
+
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            cstart = st.date_input("Construction start", key="sb_start")
+        with dc2:
+            cend = st.date_input("Construction end", key="sb_end")
+        if cend < cstart:
+            cend = cstart
+
+        st.markdown(f"**Alberta regional ({region})**")
+        rows = ab_reg[(ab_reg["Species"] == species) & (ab_reg["Feature"] == feature)]
+        disp, applied = [], None
+        for _, r in rows.iterrows():
+            ap = sb_period_applies(r["Period"], cstart, cend)
+            if ap and applied is None:
+                applied = r
+            disp.append({"Period": r["Period"], "Low": r["Low"], "Med": r["Med"],
+                         "High": r["High"], "Applies": "yes" if ap else ""})
+        st.table(pd.DataFrame(disp))
+        if applied is not None:
+            st.success(f"For your dates: Low {applied['Low']} | Med {applied['Med']} | High {applied['High']} m")
+
+        st.markdown("**Federal (Environment Canada)**")
+        fed_rows = SB_FED[SB_FED["Species"].apply(lambda s: sb_species_match(species, s))]
+        if fed_rows.empty:
+            st.caption("No federal setback listed for this species.")
+        else:
+            fdisp = []
+            for _, r in fed_rows.iterrows():
+                ap = sb_period_applies(r["Period"], cstart, cend)
+                fdisp.append({"Species": r["Species"], "Period": r["Period"], "Low": r["Low"],
+                              "Med": r["Med"], "High": r["High"], "Applies": "yes" if ap else ""})
+            st.table(pd.DataFrame(fdisp))
+
+        st.markdown("**Mapped species zones / conditions**")
+        z_rows = SB_ZONES[SB_ZONES["Species"].apply(lambda s: sb_species_match(species, s))]
+        if z_rows.empty:
+            st.caption("No mapped-zone conditions listed for this species.")
+        else:
+            for _, r in z_rows.iterrows():
+                st.markdown(f"*{r['Species']} (Condition {r['Condition']})*")
+                st.write(r["Conditions"])
+
+        with st.expander("Disturbance level definitions"):
+            for lvl, txt in DISTURBANCE_DEFS:
+                st.markdown(f"**{lvl}:** {txt}")
+
+        st.caption("Verify all values against the source tables before field use.")
 
 # ---- PHOTOS ----
 with tab_photos:
