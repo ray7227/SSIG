@@ -53,6 +53,13 @@ try:
 except Exception:
     GEO_OK = False
 
+# FWMIS loadform tab (needs lxml + fwmis_loadform_app.py in the folder).
+try:
+    from fwmis import render_fwmis
+    FWMIS_OK = True
+except Exception:
+    FWMIS_OK = False
+
 try:
     import gpxpy
     import gpxpy.gpx
@@ -1161,8 +1168,8 @@ DISTURBANCE_DEFS = [
 # =========================
 # UI
 # =========================
-tab_plan, tab_ref, tab_gis, tab_setbacks, tab_photos = st.tabs(
-    ["Field Plan", "Reference", "GIS Tools", "Setbacks", "Photos"]
+tab_plan, tab_ref, tab_gis, tab_setbacks, tab_fwmis, tab_photos = st.tabs(
+    ["Field Plan", "Reference", "GIS Tools", "Setbacks", "FWMIS", "Photos"]
 )
 
 # ---- FIELD PLAN ----
@@ -1456,6 +1463,15 @@ with tab_setbacks:
                 st.markdown(f"**{lvl}:** {txt}")
 
         st.caption("Verify all values against the source tables before field use.")
+
+# ---- FWMIS ----
+with tab_fwmis:
+    if FWMIS_OK:
+        render_fwmis()
+    else:
+        st.subheader("FWMIS Loadform Builder")
+        st.info("To enable this tab, add fwmis.py and fwmis_loadform_app.py to the app folder, "
+                "and add lxml to requirements.txt.")
 
 # ---- PHOTOS ----
 with tab_photos:
