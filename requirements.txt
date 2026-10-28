@@ -9,3 +9,4 @@ pyspellchecker
 python-docx
 geopandas
 gpxpy
+lxml
