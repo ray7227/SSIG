@@ -33,33 +33,14 @@ def render_fwmis():
     lists = read_code_lists(TEMPLATE)  # noqa: F821
     SPECIES, FEATURES = lists["tax_TAXONOMIC"], lists["inv_SITFEATURE"]
 
-    folder = Path(__file__).parent
-    found = sorted(
-        [p for p in list(folder.glob("*.xlsx")) + list(folder.glob("*.xlsm"))
-         if "tracker" in p.name.lower()],
-        key=lambda p: p.stat().st_mtime, reverse=True)
-
-    tracker_bytes = None
-    if found:
-        names = [p.name for p in found]
-        pick = st.selectbox("Tracker (from the app folder)", names, key="fwmis_pick") if len(found) > 1 else names[0]
-        if len(found) == 1:
-            st.caption(f"Using {pick} from the app folder.")
-        tracker_bytes = next(p for p in found if p.name == pick).read_bytes()
-        with st.expander("Upload a different tracker instead"):
-            up = st.file_uploader("Wildlife Sweep & Feature Tracker (.xlsx)", type=["xlsx", "xlsm"], key="fwmis_up")
-            if up:
-                tracker_bytes = up.getvalue()
-    else:
-        up = st.file_uploader("Wildlife Sweep & Feature Tracker (.xlsx)", type=["xlsx", "xlsm"], key="fwmis_up")
-        if not up:
-            st.info("Add a tracker .xlsx (filename containing \"tracker\") to the app folder, or upload one here. "
-                    "Each feature uses its Lat, Long; if blank it uses the row's ATS Start and End.")
-            return
-        tracker_bytes = up.getvalue()
+    up = st.file_uploader("Wildlife Sweep & Feature Tracker (.xlsx)", type=["xlsx", "xlsm"], key="fwmis_up")
+    if not up:
+        st.info("Each feature uses its Lat, Long. If that is blank it uses the row's ATS Start and End. "
+                "Project details come from the tracker's FWMIS Info sheet.")
+        return
 
     try:
-        df, info, meta = read_tracker(tracker_bytes)  # noqa: F821
+        df, info, meta = read_tracker(up.getvalue())  # noqa: F821
     except Exception as e:
         st.error(f"Could not read the tracker: {e}")
         return
