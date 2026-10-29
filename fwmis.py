@@ -104,7 +104,7 @@ def render_fwmis():
     OTHER = pick_option(FEATURES, "OTHR")  # noqa: F821  used when Observation is blank (visual)
     GPS = pick_option(lists["inv_GISSOURCE"], "GPS")  # noqa: F821
     DERIVED = pick_option(lists["inv_GISSOURCE"], "DERIVED")  # noqa: F821
-    DATUM = pick_option(lists["inv_GISDATUM"], "NAD 83", "NAD83")  # noqa: F821
+    DATUM = pick_option(lists["inv_GISDATUM"], "NAD 83")  # noqa: F821
     CONFIDENCE = pick_option(lists["inv_CONFDNTLVL"], "CONFIRMED")  # noqa: F821
 
     def default(options, *wanted):
