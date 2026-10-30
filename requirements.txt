@@ -7,6 +7,9 @@ pillow-heif
 pytesseract
 pyspellchecker
 python-docx
-geopandas
 gpxpy
+geopandas
 lxml
+folium
+streamlit-folium
+rasterio
