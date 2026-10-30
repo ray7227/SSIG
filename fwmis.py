@@ -88,6 +88,21 @@ ATS_HELP = ("Fill only if this row is in a different spot than the default ATS a
 # ---------------------------------------------------------------------------
 # Text helpers
 # ---------------------------------------------------------------------------
+def _clean(v):
+    """Data editor gives NaN/None for empty cells. Return None or a clean value."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, str):
+        v = v.strip()
+        return v or None
+    return v
+
+
 def _fmt_date(d):
     return f"{d:%B} {d.day}, {d.year}"
 
@@ -222,7 +237,7 @@ def _ats_picker(prefix, label):
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-def render_fwmis():
+def _render_fwmis():
     st.subheader("FWMIS Loadform Builder")
     st.caption("Type the project name and the observations, then download the loadform and copy the email.")
 
@@ -288,12 +303,12 @@ def render_fwmis():
     # --- Build rows --------------------------------------------------------
     rows, errors = [], []
     for i, r in edited.reset_index(drop=True).iterrows():
-        sp = r.get("Species")
-        obs = r.get("Observation")
-        ll_text = str(r.get("Lat, Long") or "").strip()
-        ats_s_text = str(r.get("ATS Start") or "").strip()
-        ats_e_text = str(r.get("ATS End") or "").strip()
-        comment = str(r.get("Comments") or "").strip()
+        sp = _clean(r.get("Species"))
+        obs = _clean(r.get("Observation"))
+        ll_text = str(_clean(r.get("Lat, Long")) or "")
+        ats_s_text = str(_clean(r.get("ATS Start")) or "")
+        ats_e_text = str(_clean(r.get("ATS End")) or "")
+        comment = str(_clean(r.get("Comments")) or "")
         if not sp and not obs and not ll_text and not ats_s_text and not ats_e_text and not comment:
             continue  # blank row
         n = i + 1
@@ -301,7 +316,7 @@ def render_fwmis():
             errors.append(f"Row {n}: pick a species.")
             continue
 
-        day = to_date(r.get("Date")) or sweep_date  # noqa: F821
+        day = to_date(_clean(r.get("Date"))) or sweep_date  # noqa: F821
         obs = obs or SEEN
         row = {"row": n, "date": day, "species": sp, "comment": comment, "lat": None, "lon": None}
         if obs in (SEEN, HEARD):
@@ -399,3 +414,10 @@ def render_fwmis():
         mailto = "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(body)
         st.link_button("Open in email app", mailto)
         st.caption("Remember to attach the downloaded loadform.")
+
+
+def render_fwmis():
+    try:
+        _render_fwmis()
+    except Exception as e:  # keep the other tabs alive
+        st.error(f"FWMIS tab error: {e}")
