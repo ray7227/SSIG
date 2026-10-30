@@ -62,7 +62,7 @@ except Exception:
 
 # Map tab (needs folium + streamlit-folium).
 try:
-    from maptools import render_map
+    from maptools import render_map, footprint_length
     MAP_OK = True
 except Exception:
     MAP_OK = False
@@ -1350,6 +1350,10 @@ with tab_gis:
                 st.success(
                     f"Loaded {len(footprint_gdf)} feature(s) | CRS: {footprint_gdf.crs}{area_text}"
                 )
+                if MAP_OK:
+                    _len_txt = footprint_length(footprint_gdf)
+                    if _len_txt:
+                        st.info(_len_txt + " Longest path down the middle, side branches ignored.")
 
                 c1, c2 = st.columns(2)
 
