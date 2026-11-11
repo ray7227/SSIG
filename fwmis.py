@@ -18,7 +18,22 @@ import urllib.parse
 from pathlib import Path
 
 import pandas as pd
+import requests
 import streamlit as st
+
+try:                                    # lat/long for ATS rows (uses the ATS grid)
+    import maptools as _mt
+except Exception:
+    _mt = None
+
+CONTACT_MAP_URL = ("https://geospatial.alberta.ca/portal/apps/experiencebuilder/experience/"
+                   "?id=2e8e2dcc3f0a44c2b82db03c161b8583")
+CONTACT_LAYERS = [
+    "https://geospatial.alberta.ca/titan/rest/services/boundaries/fishwild_wmu_biologist_contact_public/FeatureServer/0/query",
+    "https://geospatial.alberta.ca/titan/rest/services/boundaries/fishwild_wmu_biologist_contact_public/MapServer/0/query",
+]
+_SKIP_FIELDS = {"objectid", "fid", "shape", "shape_area", "shape_length", "shape.starea()",
+                "shape.stlength()", "globalid", "st_area(shape)", "st_length(shape)"}
 
 # ---- Load helpers + embedded template from the standalone app --------------
 _PATH = Path(__file__).with_name("fwmis_loadform_app.py")
@@ -237,6 +252,65 @@ def _ats_picker(prefix, label):
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl=86400, show_spinner=False)
+def _wildlife_contact(lat, lon):
+    """Query the AEPA wildlife biologist contact layer at a point. Returns list of attribute dicts, or None."""
+    params = {"geometry": f"{lon},{lat}", "geometryType": "esriGeometryPoint", "inSR": "4326",
+              "spatialRel": "esriSpatialRelIntersects", "outFields": "*", "returnGeometry": "false",
+              "f": "json"}
+    for url in CONTACT_LAYERS:
+        try:
+            j = requests.get(url, params=params, timeout=12).json()
+        except Exception:
+            continue
+        if "error" in j:
+            continue
+        out = []
+        for f in j.get("features") or []:
+            a = {k: v for k, v in (f.get("attributes") or {}).items()
+                 if k.lower() not in _SKIP_FIELDS and v not in (None, "", " ")}
+            if a:
+                out.append(a)
+        return out
+    return None
+
+
+def _contacts_for(points):
+    """Unique contacts across the observation points. Returns (contacts, emails, failed)."""
+    seen, contacts, emails, failed = set(), [], [], False
+    for lat, lon in list(dict.fromkeys((round(a, 4), round(b, 4)) for a, b in points))[:25]:
+        res = _wildlife_contact(lat, lon)
+        if res is None:
+            failed = True
+            continue
+        for a in res:
+            k = tuple(sorted((str(x), str(y)) for x, y in a.items()))
+            if k in seen:
+                continue
+            seen.add(k)
+            contacts.append(a)
+            for v in a.values():
+                for e in re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", str(v)):
+                    if e.lower() not in [x.lower() for x in emails]:
+                        emails.append(e)
+    return contacts, emails, failed
+
+
+def _row_point(lat=None, lon=None, ats_text=""):
+    if lat is not None:
+        return (lat, lon)
+    if _mt is None:
+        return None
+    try:
+        a = _mt.parse_ats_any(ats_text)
+        if a:
+            (la, lo), _, _ = _mt.ats_to_latlon(a)
+            return (la, lo)
+    except Exception:
+        pass
+    return None
+
+
 def _render_fwmis():
     st.subheader("FWMIS Loadform Builder")
     st.caption("Type the project name and the observations, then download the loadform and copy the email.")
@@ -332,7 +406,7 @@ def _render_fwmis():
             continue
         if ll:
             lat, lon = ll
-            row.update(lat=lat, lon=lon, loc_type=SITE, gis_source=GPS)
+            row.update(lat=lat, lon=lon, loc_type=SITE, gis_source=GPS, pt=(lat, lon))
             if not (ALBERTA_LAT[0] <= lat <= ALBERTA_LAT[1]) or not (ALBERTA_LON[0] <= lon <= ALBERTA_LON[1]):  # noqa: F821
                 errors.append(f"Row {n}: {lat}, {lon} is outside Alberta (longitude should be negative).")
         else:
@@ -352,7 +426,8 @@ def _render_fwmis():
             if e_ats == s_ats:
                 e_ats = None
             row.update(ats_start=ats_to_fwmis(s_ats, lists), ats_end=ats_to_fwmis(e_ats, lists),  # noqa: F821
-                       loc_type=TRANSECT if e_ats else SITE, gis_source=DERIVED)
+                       loc_type=TRANSECT if e_ats else SITE, gis_source=DERIVED,
+                       pt=_row_point(ats_text=ats_s_text or ats_e_text))
         rows.append(row)
 
     if not proj_name.strip():
@@ -396,6 +471,26 @@ def _render_fwmis():
     # --- Email -------------------------------------------------------------
     if proj_name.strip():
         st.markdown("**Submission email**")
+
+        points = [r["pt"] for r in rows if r.get("pt")]
+        contacts, emails, failed = ([], [], False)
+        if points:
+            with st.spinner("Looking up the wildlife contact for these locations..."):
+                contacts, emails, failed = _contacts_for(points)
+        if contacts:
+            st.caption("Wildlife contact for these locations (AEPA Wildlife Management Unit "
+                       "Biologist Contact layer):")
+            st.dataframe(pd.DataFrame(contacts), hide_index=True, use_container_width=True)
+            if len(emails) > 1:
+                st.info("Observations fall in more than one contact area, so all contacts are included.")
+        elif points and failed:
+            st.warning("Couldn't reach the Alberta contact service. Look the contact up on the map below.")
+        elif not points:
+            st.caption("Add observation locations to look up the wildlife contact.")
+        else:
+            st.warning("No wildlife contact found for these locations. Check the map below.")
+        st.markdown(f"[Open the AEPA Fish and Wildlife Contact Map to confirm]({CONTACT_MAP_URL})")
+
         subject = f"FWMIS Loadform Submission - {proj_name.strip()}"
         body = (
             "Hello,\n\n"
@@ -407,11 +502,16 @@ def _render_fwmis():
             "Please let me know if any additional information is required.\n\n"
             "Kind regards,"
         )
+        to_line = "; ".join(emails)
+        if to_line:
+            st.caption("To")
+            st.code(to_line, language=None)
         st.caption("Subject")
         st.code(subject, language=None)
         st.caption("Body")
         st.code(body, language=None)
-        mailto = "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(body)
+        mailto = ("mailto:" + urllib.parse.quote(",".join(emails), safe="@,")
+                  + "?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(body))
         st.link_button("Open in email app", mailto)
         st.caption("Remember to attach the downloaded loadform.")
 
