@@ -13,3 +13,5 @@ lxml
 folium
 streamlit-folium
 rasterio
+requests
+ 
