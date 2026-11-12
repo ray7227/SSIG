@@ -437,6 +437,21 @@ def centerline(gdf):
     return {"longest": max(lengths), "total": sum(lengths), "pieces": len(lengths), "lines": ls}
 
 
+def footprint_area_ha(gdf):
+    """Area of all polygons in hectares, overlaps counted once. None if there are no polygons."""
+    if gdf is None or gdf.empty:
+        return None
+    polys = gdf[gdf.geometry.notna() & gdf.geom_type.isin(["Polygon", "MultiPolygon"])]
+    if polys.empty:
+        return None
+    try:
+        crs = polys.estimate_utm_crs()
+    except Exception:
+        crs = "EPSG:3400"
+    merged = shapely.union_all(polys.to_crs(crs).geometry.values)
+    return merged.area / 10000.0
+
+
 def length_text(cl):
     if not cl:
         return ""
@@ -526,7 +541,11 @@ def _vector_and_length(name, data):
         cl = centerline(gdf)
     except Exception:
         cl = None
-    return gdf, cl
+    try:
+        area = footprint_area_ha(gdf)
+    except Exception:
+        area = None
+    return gdf, cl, area
 
 
 def footprint_length(gdf):
@@ -634,7 +653,7 @@ def render_map():
                 url = "data:image/png;base64," + base64.b64encode(png).decode()
                 folium.raster_layers.ImageOverlay(url, bounds=b, name=name, opacity=0.85).add_to(m)
             else:
-                gdf, cl = _vector_and_length(name, up.getvalue())
+                gdf, cl, area = _vector_and_length(name, up.getvalue())
                 if len(gdf) > 5000:
                     gdf = gdf.iloc[:5000]
                     notes.append(f"{name}: showing the first 5000 features.")
@@ -652,7 +671,13 @@ def render_map():
                         style_function=lambda f: {"color": "#ffffff", "weight": 2, "dashArray": "6 6"},
                         tooltip=f"{cl['longest']:,.0f} m ({cl['longest'] / 1000:.2f} km)",
                     ).add_to(m)
-                    notes.append(f"**{name}**: {length_text(cl)}")
+                info = []
+                if area is not None:
+                    info.append(f"Footprint area: {area:,.3f} ha")
+                if cl:
+                    info.append(length_text(cl))
+                if info:
+                    notes.append(f"**{name}**: " + "  |  ".join(info))
                 minx, miny, maxx, maxy = gdf.total_bounds
                 b = [[miny, minx], [maxy, maxx]]
             fit = b if fit is None else [[min(fit[0][0], b[0][0]), min(fit[0][1], b[0][1])],
