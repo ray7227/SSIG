@@ -2,10 +2,8 @@
 Review tab for the AiM Field Assistant.
 
 Final review checklist for reports, plus the APA 7 reference formatting guide.
-Tick items as you go; progress shows at the top.
 """
 
-import pandas as pd
 import streamlit as st
 
 CHECKLIST = {
@@ -86,45 +84,19 @@ APA = [
 ]
 
 
-def _keys():
-    return [f"rev_{s}_{i}" for s, items in CHECKLIST.items() for i in range(len(items))]
-
-
 def render_review():
     st.subheader("Final Review Checklist")
-    st.caption("Run through this before a report goes out. Tick each item as you check it.")
-
-    keys = _keys()
-    done = sum(bool(st.session_state.get(k)) for k in keys)
-    c1, c2 = st.columns([4, 1])
-    c1.progress(done / len(keys), text=f"{done} of {len(keys)} checked")
-    if c2.button("Reset", key="rev_reset", use_container_width=True):
-        for k in keys:
-            st.session_state[k] = False
-        st.rerun()
-    if done == len(keys):
-        st.success("All checks done.")
+    st.caption("Run through this before a report goes out.")
 
     for section, items in CHECKLIST.items():
         st.markdown(f"**{section}**")
-        for i, (item, how) in enumerate(items):
-            st.checkbox(item, key=f"rev_{section}_{i}", help=None)
-            st.caption(how)
-
-    lines = []
-    for section, items in CHECKLIST.items():
-        lines.append(section.upper())
-        for i, (item, how) in enumerate(items):
-            mark = "[x]" if st.session_state.get(f"rev_{section}_{i}") else "[ ]"
-            lines.append(f"{mark} {item}: {how.replace('*', '')}")
-        lines.append("")
-    st.download_button("Download checklist (.txt)", "\n".join(lines), "final_review_checklist.txt",
-                       "text/plain", key="rev_dl")
+        for item, how in items:
+            st.markdown(f"- **{item}**  \n  {how}")
 
     st.markdown("---")
     st.subheader("APA 7 Reference Formatting Guide")
     for cat, fmt, ex, note in APA:
-        with st.expander(cat):
+        with st.expander(cat, expanded=True):
             st.markdown(f"**Format:** {fmt}")
             st.markdown(f"**Example:** {ex}")
             st.caption(note)
