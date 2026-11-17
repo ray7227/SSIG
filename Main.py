@@ -67,6 +67,13 @@ try:
 except Exception:
     MAP_OK = False
 
+# Review tab (final report checklist).
+try:
+    from review import render_review
+    REVIEW_OK = True
+except Exception:
+    REVIEW_OK = False
+
 try:
     import gpxpy
     import gpxpy.gpx
@@ -1221,8 +1228,8 @@ DISTURBANCE_DEFS = [
 # =========================
 # UI
 # =========================
-tab_plan, tab_ref, tab_gis, tab_map, tab_setbacks, tab_fwmis, tab_photos = st.tabs(
-    ["Field Plan", "Reference", "GIS Tools", "Map", "Setbacks", "FWMIS", "Photos"]
+tab_plan, tab_ref, tab_gis, tab_map, tab_setbacks, tab_fwmis, tab_review, tab_photos = st.tabs(
+    ["Field Plan", "Reference", "GIS Tools", "Map", "Setbacks", "FWMIS", "Review", "Photos"]
 )
 
 # ---- FIELD PLAN ----
@@ -1570,6 +1577,17 @@ with tab_fwmis:
         st.subheader("FWMIS Loadform Builder")
         st.info("To enable this tab, add fwmis.py and fwmis_loadform_app.py to the app folder, "
                 "and add lxml to requirements.txt.")
+
+# ---- REVIEW ----
+with tab_review:
+    if REVIEW_OK:
+        try:
+            render_review()
+        except Exception as e:
+            st.error(f"Review tab error: {e}")
+    else:
+        st.subheader("Final Review Checklist")
+        st.info("To enable this tab, add review.py to the app folder.")
 
 # ---- PHOTOS ----
 with tab_photos:
