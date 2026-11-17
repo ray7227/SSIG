@@ -311,6 +311,20 @@ def _row_point(lat=None, lon=None, ats_text=""):
     return None
 
 
+def _email_draft(to, subject, body, attachment, filename):
+    """Unsent email (.eml) with the loadform attached. Outlook opens it as a new draft."""
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = subject
+    msg["X-Unsent"] = "1"                 # tells Outlook to open it as a draft to send
+    msg.set_content(body)
+    msg.add_attachment(attachment, maintype="application",
+                       subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       filename=filename)
+    return msg.as_bytes()
+
+
 def _render_fwmis():
     st.subheader("FWMIS Loadform Builder")
     st.caption("Type the project name and the observations, then download the loadform and copy the email.")
@@ -458,10 +472,11 @@ def _render_fwmis():
         )
 
     safe = re.sub(r"[^A-Za-z0-9]+", "_", proj_name).strip("_") or "Project"  # noqa: F821
+    loadform_name = f"FWMIS_LOADFORM_{safe}_{min(dates):%Y%m%d}.xlsx"
     st.download_button(
         f"Download loadform ({len(rows)} rows)" if file_bytes else "Download loadform",
         data=file_bytes or b"",
-        file_name=f"FWMIS_LOADFORM_{safe}_{min(dates):%Y%m%d}.xlsx",
+        file_name=loadform_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         disabled=file_bytes is None,
         type="primary",
@@ -510,10 +525,24 @@ def _render_fwmis():
         st.code(subject, language=None)
         st.caption("Body")
         st.code(body, language=None)
+        if file_bytes:
+            st.download_button(
+                "Email draft with loadform attached (.eml)",
+                data=_email_draft(emails, subject, body, file_bytes, loadform_name),
+                file_name=re.sub(r'[\\/:*?"<>|]+', "_", subject) + ".eml",  # noqa: F821
+                mime="message/rfc822",
+                type="primary",
+                key="fwmis_eml",
+                help="Open the downloaded file and Outlook opens a new email with the To, subject, "
+                     "body and loadform already filled in. Just review and hit Send.",
+            )
+            st.caption("Open the downloaded .eml file. Outlook opens it as a ready-to-send email "
+                       "with the loadform attached.")
+        else:
+            st.caption("Fix the errors above to get the email draft with the loadform attached.")
         mailto = ("mailto:" + urllib.parse.quote(",".join(emails), safe="@,")
                   + "?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(body))
-        st.link_button("Open in email app", mailto)
-        st.caption("Remember to attach the downloaded loadform.")
+        st.link_button("Or open a plain email (attach the loadform yourself)", mailto)
 
 
 def render_fwmis():
