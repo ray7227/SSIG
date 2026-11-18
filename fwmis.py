@@ -10,6 +10,9 @@ description, datum (NAD 83), confidence (Confirmed), sensitive (N),
 measurement source (GPS for lat/long rows, Derived for ATS rows),
 sample numbers, count sample section for seen/heard animals, and the feature
 section for signs. Also writes the submission email.
+
+Or drag in the Wildlife Sweep Tracker (Incidentals and Features) to fill the
+observation rows for you, then check and download as normal.
 """
 
 import base64
@@ -159,6 +162,107 @@ def _extra_lists():
             out[name] = []
     wb.close()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Wildlife Sweep Tracker (Incidentals and Features) -> observation rows
+# ---------------------------------------------------------------------------
+TRACKER_COLS = {                     # our name: words to find in the tracker header
+    "ats_s": ["ats start"], "ats_e": ["ats end"], "latlon": ["lat/long", "lat, long", "lat long", "latitude"],
+    "date": ["sweep date"], "obs": ["incidental", "observation"], "feature": ["feature"],
+    "species": ["common name", "name", "species"], "status": ["status"], "mitigation": ["mitigation"],
+    "notes": ["notes", "note", "comment"],
+}
+SEEN_WORDS = ("visual", "seen", "sighting", "observed", "observation")
+HEARD_WORDS = ("heard", "call", "song", "vocal", "drumming", "singing")
+
+
+def _match_species(name, options):
+    """Tracker common name -> FWMIS species option (or None)."""
+    name = re.sub(r"\s*\(.*\)\s*$", "", str(name)).strip()   # drop "(Alces alces)"  # noqa: F821
+    hit = auto_species(name, options)  # noqa: F821
+    if hit:
+        return hit
+    from difflib import get_close_matches
+    names = {norm(name_of(o)): o for o in options}  # noqa: F821
+    close = get_close_matches(norm(name), list(names), n=1, cutoff=0.85)  # noqa: F821
+    return names[close[0]] if close else None
+
+
+def _is_name_hdr(c):
+    t = str(c or "").strip().lower()
+    return t in ("name", "species") or "common name" in t or t.startswith("name (")
+
+
+def _read_sweep_tracker(data, species_opts, sign_opts, feature_opts):
+    """Returns (DataFrame in OBS_COLS order, list of species names not matched)."""
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)  # noqa: F821
+    ws = next((w for w in wb.worksheets
+               if any(_is_name_hdr(c) for r in w.iter_rows(max_row=10, values_only=True) for c in r)),
+              wb.worksheets[0])
+    rows = list(ws.iter_rows(values_only=True))
+    wb.close()
+    hdr_i = next((i for i, r in enumerate(rows[:10]) if any(_is_name_hdr(c) for c in r)), None)
+    if hdr_i is None:
+        raise ValueError("couldn't find the header row (needs a 'Name' column)")
+    hdr = [str(c or "").strip().lower() for c in rows[hdr_i]]
+    col = {}
+    for key, words in TRACKER_COLS.items():
+        for j, h in enumerate(hdr):
+            if j not in col.values() and any(w in h for w in words):
+                col[key] = j
+                break
+
+    def get(r, key):
+        j = col.get(key)
+        return _clean(r[j]) if j is not None and j < len(r) else None
+
+    out, missing = [], []
+    for r in rows[hdr_i + 1:]:
+        sp_txt = str(get(r, "species") or "")
+        obs_txt = str(get(r, "obs") or "")
+        ats_s, ats_e = str(get(r, "ats_s") or ""), str(get(r, "ats_e") or "")
+        ll = str(get(r, "latlon") or "")
+        if not (sp_txt or obs_txt):
+            continue
+        sp = _match_species(sp_txt, species_opts) if sp_txt else None
+        if sp_txt and not sp:
+            missing.append(sp_txt)
+        low = obs_txt.lower()
+        feat_yes = str(get(r, "feature") or "").lower().startswith("y")
+        comment = []
+        if any(w in low for w in HEARD_WORDS):
+            obs = HEARD
+        elif not low or any(w in low for w in SEEN_WORDS):
+            obs = SEEN
+            if not low and feat_yes:
+                obs = pick_option(sign_opts, "OTHR")  # noqa: F821
+                comment.append("Wildlife feature")
+        else:
+            obs = auto_feature(obs_txt, feature_opts)  # noqa: F821
+            if obs not in sign_opts:
+                obs = pick_option(sign_opts, "OTHR")  # noqa: F821
+            words = [w for w in re.findall(r"[a-z]+", low) if len(w) > 2]  # noqa: F821
+            same = all(w in name_of(obs).lower() for w in words)  # noqa: F821
+            if not same or code_of(obs) in ("BURR", "HAIR", "FEED", "OTHR"):  # noqa: F821
+                comment.append(obs_txt)                # keep the exact sign, e.g. Game trail, Nest
+        status = str(get(r, "status") or "")
+        if status and status.lower() not in ("n/a", "na", "-"):
+            comment.append(status)
+        notes = str(get(r, "notes") or "")
+        if notes:
+            comment.append(notes)
+        day = to_date(get(r, "date"))  # noqa: F821
+        if ats_e and ats_e.replace(" ", "").upper() == ats_s.replace(" ", "").upper():
+            ats_e = ""                                   # same ATS = all in one spot
+        if ll and not parse_latlon(ll):  # noqa: F821
+            ll = ""
+        out.append({"Species": sp, "Observation": obs, "Date": day, "Lat, Long": ll,
+                    "ATS Start": ats_s, "ATS End": ats_e, "Comments": ", ".join(comment)})
+    if not out:
+        raise ValueError("no observations found under the header row")
+    return pd.DataFrame(out, columns=OBS_COLS), sorted(set(missing))
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +449,36 @@ def _render_fwmis():
     AGE_U = pick_option(extra["inv_AGE_GROUP"], "U") or "Unknown -U"  # noqa: F821
     AREASEARCH = pick_option(lists["inv_SURVEYTYPE"], "AREASEARCH") or lists["inv_SURVEYTYPE"][0]  # noqa: F821
 
+    # --- Optional: fill rows from the tracker ---------------------------------
+    trk = st.file_uploader("Optional: drag in your Wildlife Sweep Tracker to fill the observations",
+                           type=["xlsx", "xlsm"], key="fwmis_trk",
+                           help="Uses Name, Incidental Observations, Sweep Date, Lat/Long and "
+                                "ATS Start / End. Completion, Feature and Mitigation are not needed for FWMIS. "
+                                "Status (Active / Inactive) and Notes go in the comments.")
+    if trk is not None:
+        data = trk.getvalue()
+        sig = (trk.name, len(data), hash(data))
+        if st.session_state.get("fwmis_trk_sig") != sig:
+            try:
+                df, missing = _read_sweep_tracker(data, SPECIES, SIGNS, lists["inv_SITFEATURE"])
+                st.session_state["fwmis_rows"] = df
+                st.session_state.pop("fwmis_editor", None)          # drop old table edits
+                days = [d for d in df["Date"] if d is not None and not pd.isna(d)]
+                if days:
+                    st.session_state["fwmis_date"] = min(days)
+                st.session_state["fwmis_trk_sig"] = sig
+                st.session_state["fwmis_trk_msg"] = (len(df), missing)
+            except Exception as e:
+                st.error(f"Couldn't read the tracker: {e}")
+        n, missing = st.session_state.get("fwmis_trk_msg", (0, []))
+        if n:
+            st.success(f"Filled {n} observation rows from {trk.name}. Check them below, then download.")
+        if missing:
+            st.warning("Pick these species by hand (no exact FWMIS match): " + ", ".join(missing))
+    elif st.session_state.get("fwmis_trk_sig"):
+        st.session_state.pop("fwmis_trk_sig", None)
+        st.session_state.pop("fwmis_trk_msg", None)
+
     # --- Project -----------------------------------------------------------
     st.markdown("**Project**")
     c1, c2 = st.columns([2, 1])
@@ -367,7 +501,12 @@ def _render_fwmis():
         st.caption(f"Default ATS: {common_s}" + (f" to {common_e}" if common_e else ""))
 
     # --- Observations ------------------------------------------------------
-    st.markdown("**Observations** (one row each)")
+    oc1, oc2 = st.columns([4, 1])
+    oc1.markdown("**Observations** (one row each)")
+    if oc2.button("Clear rows", key="fwmis_clear", use_container_width=True):
+        st.session_state.pop("fwmis_rows", None)
+        st.session_state.pop("fwmis_editor", None)
+        st.rerun()
     st.caption("Only Species is required. Observation blank = Seen. Date blank = sweep date. "
                "Location blank = default ATS.")
     if "fwmis_rows" not in st.session_state:
