@@ -818,8 +818,8 @@ def _nice_interval(relief, target=14):
     return 1000
 
 
-# Soft colours so contours never get confused with your own layers (which are bright).
-RAMP = ["#B3E5FC", "#C8E6C9", "#FFF9C4", "#FFE0B2", "#FFCDD2"]
+# Contour colours, low to high. Drawn with a dark edge so they show on imagery.
+RAMP = ["#40C4FF", "#B2FF59", "#FFFF00", "#FFAB40", "#FF80AB"]
 
 
 def _ramp(t):
@@ -1236,7 +1236,7 @@ def render_map():
     o1, o2, o3, o4 = st.columns([1, 1, 1, 2])
     show_cont = o1.checkbox("Contour lines", value=True, key="map_cont",
                             help="Elevation contours around your files (or the search point). "
-                                 "Soft colours go from blue (low) to pink (high). Thick lines are labelled.")
+                                 "Colours go from blue (low) to pink (high). Lines are labelled with the elevation.")
     iv_pick = o2.selectbox("Interval", ["Auto", 1, 2, 5, 10, 25, 50, 100], key="map_iv",
                            help="Contour spacing in metres.")
     show_ats = o3.checkbox("ATS grid", value=True, key="map_ats", help="Quarter-section lines around your files.")
@@ -1282,21 +1282,40 @@ def render_map():
                                            None if iv_pick == "Auto" else float(iv_pick))
             dem = _dem_window(*tuple(round(v, 5) for v in aoi))
             fg = folium.FeatureGroup(name=f"Contours ({iv:g} m)", show=True)
+            # dark edge under every line, then the coloured line on top
+            folium.GeoJson(gj, style_function=lambda f: {"color": "#000000",
+                                                         "weight": 5 if f["properties"]["idx"] else 3.5,
+                                                         "opacity": 0.6},
+                           control=False).add_to(fg)
             folium.GeoJson(gj, style_function=lambda f: {"color": f["properties"]["c"],
-                                                         "weight": 2.2 if f["properties"]["idx"] else 1,
-                                                         "opacity": 0.9},
-                           highlight_function=lambda f: {"weight": 4},
+                                                         "weight": 3 if f["properties"]["idx"] else 1.8,
+                                                         "opacity": 1},
+                           highlight_function=lambda f: {"weight": 5},
                            tooltip=folium.GeoJsonTooltip(fields=["elev"], labels=False)).add_to(fg)
-            idx = sorted([f for f in gj["features"] if f["properties"]["idx"]],
-                         key=lambda f: -len(f["geometry"]["coordinates"]))[:40]
-            for f in idx:
-                coords = [(y, x) for x, y in f["geometry"]["coordinates"]]
-                pl = folium.PolyLine(coords, weight=0, opacity=0)
-                pl.add_to(fg)
-                plugins.PolyLineTextPath(pl, f" {f['properties']['elev']} ", center=True, offset=-4,
-                                         attributes={"fill": "#FFFFFF", "font-size": "12",
-                                                     "font-weight": "bold", "stroke": "#000000",
-                                                     "stroke-width": "0.6"}).add_to(fg)
+            # labels: every line if there aren't many, else the thick ones; repeated along long lines
+            feats = gj["features"]
+            lab = feats if len(feats) <= 60 else [f for f in feats if f["properties"]["idx"]]
+            step = max(aoi[2] - aoi[0], (aoi[3] - aoi[1]) * 1.6) / 4      # roughly a label every quarter of the view
+            n_lab = 0
+            for f in sorted(lab, key=lambda f: -len(f["geometry"]["coordinates"])):
+                xy = f["geometry"]["coordinates"]
+                piece, plen = [xy[0]], 0.0
+                for (x0, y0), (x1, y1) in zip(xy[:-1], xy[1:]):
+                    piece.append((x1, y1))
+                    plen += math.hypot((x1 - x0) * 0.6, y1 - y0)
+                    if plen >= step or (x1, y1) == tuple(xy[-1]):
+                        if len(piece) >= 2 and plen > step * 0.15 and n_lab < 150:
+                            if piece[-1][0] < piece[0][0]:
+                                piece = piece[::-1]                          # keep text upright
+                            pl = folium.PolyLine([(y, x) for x, y in piece], weight=0, opacity=0)
+                            pl.add_to(fg)
+                            plugins.PolyLineTextPath(
+                                pl, f"{f['properties']['elev']}", center=True, offset=5,
+                                attributes={"fill": "#FFFFFF", "font-size": "15", "font-weight": "bold",
+                                            "stroke": "#000000", "stroke-width": "3.5",
+                                            "paint-order": "stroke", "stroke-linejoin": "round"}).add_to(fg)
+                            n_lab += 1
+                        piece, plen = [(x1, y1)], 0.0
             fg.add_to(m)
             cont_info = (iv, emin, emax)
         except Exception as e:
