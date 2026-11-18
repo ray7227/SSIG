@@ -422,7 +422,7 @@ def _email_draft(to, subject, body, attachment, filename):
     msg["To"] = ", ".join(to)
     msg["Subject"] = subject
     msg["X-Unsent"] = "1"                 # tells Outlook to open it as a draft to send
-    msg.set_content(body)
+    msg.set_content(body, charset="utf-8", cte="base64")   # base64: no stray = signs in Outlook
     msg.add_attachment(attachment, maintype="application",
                        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        filename=filename)
