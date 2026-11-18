@@ -773,10 +773,10 @@ def _pick_zoom(w, s, e, n, max_tiles, zmax=14):
 
 
 @st.cache_data(show_spinner="Loading elevation...", max_entries=20)
-def _dem_window(w, s, e, n, max_tiles=30):
+def _dem_window(w, s, e, n, max_tiles=30, zmax=13):
     """Elevation grid for a box. Returns lon (cols), lat (rows, south to north), elev (rows, cols), z, pixel_m."""
     from concurrent.futures import ThreadPoolExecutor
-    z = _pick_zoom(w, s, e, n, max_tiles)
+    z = _pick_zoom(w, s, e, n, max_tiles, zmax)    # 13 is about the real detail of the terrain data
     x0, y0 = _tile_xy(w, n, z)
     x1, y1 = _tile_xy(e, s, z)
     tx0, ty0, tx1, ty1 = int(x0), int(y0), int(x1), int(y1)
@@ -831,12 +831,27 @@ def _ramp(t):
     return "#" + "".join(f"{round(x + (y - x) * f):02x}" for x, y in zip(a, b))
 
 
+def _chaikin(xy, n=2):
+    """Round off corners so contours look smooth."""
+    pts = np.asarray(xy, float)
+    closed = len(pts) > 3 and np.allclose(pts[0], pts[-1])
+    for _ in range(n):
+        if len(pts) < 3:
+            break
+        q = 0.75 * pts[:-1] + 0.25 * pts[1:]
+        r = 0.25 * pts[:-1] + 0.75 * pts[1:]
+        mid = np.empty((len(q) * 2, 2))
+        mid[0::2], mid[1::2] = q, r
+        pts = np.vstack([mid, mid[:1]]) if closed else np.vstack([pts[:1], mid, pts[-1:]])
+    return pts
+
+
 @st.cache_data(show_spinner="Drawing contours...", max_entries=20)
 def _contours(bbox, interval=None):
     import contourpy
     from shapely.geometry import LineString, mapping
     d = _dem_window(*bbox)
-    zz = _smooth(d["elev"], passes=2 if d["pixel_m"] < 15 else 1)
+    zz = _smooth(d["elev"], passes=max(1, min(6, round(35 / d["pixel_m"]))))   # removes stair-step noise
     lo, hi = float(np.nanpercentile(zz, 1)), float(np.nanpercentile(zz, 99))
     iv = interval or _nice_interval(hi - lo)
     levels = np.arange(math.ceil(np.nanmin(zz) / iv) * iv, np.nanmax(zz) + 1e-6, iv)
@@ -852,7 +867,7 @@ def _contours(bbox, interval=None):
         for seg in gen.lines(lv):
             if len(seg) < 4:
                 continue
-            ln = LineString(seg).simplify(tol)
+            ln = LineString(_chaikin(LineString(seg).simplify(tol).coords, 2))
             if ln.length < tol * 4:
                 continue
             feats.append({"type": "Feature",
@@ -1292,30 +1307,38 @@ def render_map():
                                                          "opacity": 1},
                            highlight_function=lambda f: {"weight": 5},
                            tooltip=folium.GeoJsonTooltip(fields=["elev"], labels=False)).add_to(fg)
-            # labels: every line if there aren't many, else the thick ones; repeated along long lines
+            # elevation numbers sitting on the lines (no hovering needed)
             feats = gj["features"]
-            lab = feats if len(feats) <= 60 else [f for f in feats if f["properties"]["idx"]]
-            step = max(aoi[2] - aoi[0], (aoi[3] - aoi[1]) * 1.6) / 4      # roughly a label every quarter of the view
+            lab = feats if len(feats) <= 80 else [f for f in feats if f["properties"]["idx"]]
+            kx = _m_per_deg_lon((aoi[1] + aoi[3]) / 2)
+            step = max(150.0, max((aoi[2] - aoi[0]) * kx, (aoi[3] - aoi[1]) * 111320) / 5)
             n_lab = 0
             for f in sorted(lab, key=lambda f: -len(f["geometry"]["coordinates"])):
-                xy = f["geometry"]["coordinates"]
-                piece, plen = [xy[0]], 0.0
-                for (x0, y0), (x1, y1) in zip(xy[:-1], xy[1:]):
-                    piece.append((x1, y1))
-                    plen += math.hypot((x1 - x0) * 0.6, y1 - y0)
-                    if plen >= step or (x1, y1) == tuple(xy[-1]):
-                        if len(piece) >= 2 and plen > step * 0.15 and n_lab < 150:
-                            if piece[-1][0] < piece[0][0]:
-                                piece = piece[::-1]                          # keep text upright
-                            pl = folium.PolyLine([(y, x) for x, y in piece], weight=0, opacity=0)
-                            pl.add_to(fg)
-                            plugins.PolyLineTextPath(
-                                pl, f"{f['properties']['elev']}", center=True, offset=5,
-                                attributes={"fill": "#FFFFFF", "font-size": "15", "font-weight": "bold",
-                                            "stroke": "#000000", "stroke-width": "3.5",
-                                            "paint-order": "stroke", "stroke-linejoin": "round"}).add_to(fg)
-                            n_lab += 1
-                        piece, plen = [(x1, y1)], 0.0
+                xy = np.asarray(f["geometry"]["coordinates"], float)
+                if len(xy) < 2 or n_lab >= 200:
+                    continue
+                seg = np.hypot(np.diff(xy[:, 0]) * kx, np.diff(xy[:, 1]) * 111320)
+                cum = np.concatenate([[0], np.cumsum(seg)])
+                total = cum[-1]
+                if total < 60:
+                    continue
+                for d in np.arange(min(step / 2, total / 2), total, step):
+                    i = min(int(np.searchsorted(cum, d)), len(xy) - 1)
+                    i0, i1 = max(i - 2, 0), min(i + 2, len(xy) - 1)
+                    dx = (xy[i1, 0] - xy[i0, 0]) * kx
+                    dy = (xy[i1, 1] - xy[i0, 1]) * 111320
+                    ang = -math.degrees(math.atan2(dy, dx))
+                    if ang > 90:
+                        ang -= 180
+                    elif ang < -90:
+                        ang += 180
+                    html = (f'<div style="transform:translate(-50%,-50%) rotate({ang:.0f}deg);white-space:nowrap;'
+                            f'font:bold 13px Arial,sans-serif;color:{f["properties"]["c"]};'
+                            f'text-shadow:0 0 3px #000,0 0 3px #000,0 0 2px #000,0 0 1px #000;'
+                            f'pointer-events:none">{f["properties"]["elev"]}</div>')
+                    folium.Marker((xy[i, 1], xy[i, 0]),
+                                  icon=folium.DivIcon(html=html, icon_size=(0, 0), icon_anchor=(0, 0))).add_to(fg)
+                    n_lab += 1
             fg.add_to(m)
             cont_info = (iv, emin, emax)
         except Exception as e:
