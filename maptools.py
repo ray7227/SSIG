@@ -33,6 +33,10 @@ import streamlit as st
 import folium
 from folium import plugins
 from streamlit_folium import st_folium
+try:
+    from folium.template import Template          # folium 0.17+
+except Exception:
+    from jinja2 import Template
 
 try:
     import geopandas as gpd
@@ -984,11 +988,52 @@ PALETTE = ["#FF1744", "#00E5FF", "#FFEA00", "#76FF03", "#FF9100", "#D500F9",
            "#2979FF", "#FF4081", "#1DE9B6", "#C6FF00", "#FFFFFF", "#FFAB00"]
 
 
-def _base_map(center, zoom):
+IMAGERY = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+
+# Leaflet.TileLayer.Fallback 1.0.4 (c) Boris Seang, Apache-2.0: when a tile is missing,
+# show the next zoom out, scaled up, instead of a blank.
+FALLBACK_JS = r"""/*!
+ Leaflet.TileLayer.Fallback 1.0.4+e36cde9
+ (c) 2015-2018 Boris Seang
+ License Apache-2.0
+ */
+!function(i,e){"function"==typeof define&&define.amd?define(["leaflet"],e):e("object"==typeof module&&module.exports?require("leaflet"):i.L)}(this,function(i){i.TileLayer.Fallback=i.TileLayer.extend({options:{minNativeZoom:0},initialize:function(e,r){i.TileLayer.prototype.initialize.call(this,e,r)},createTile:function(e,r){var t=i.TileLayer.prototype.createTile.call(this,e,r);return t._originalCoords=e,t._originalSrc=t.src,t},_createCurrentCoords:function(i){var e=this._wrapCoords(i);return e.fallback=!0,e},_originalTileOnError:i.TileLayer.prototype._tileOnError,_tileOnError:function(i,e,r){var t,l,o,a=this,n=e._originalCoords,c=e._currentCoords=e._currentCoords||a._createCurrentCoords(n),s=e._fallbackZoom=void 0===e._fallbackZoom?n.z-1:e._fallbackZoom-1,f=e._fallbackScale=2*(e._fallbackScale||1),p=a.getTileSize(),u=e.style;if(s<a.options.minNativeZoom)return this._originalTileOnError(i,e,r);c.z=s,c.x=Math.floor(c.x/2),c.y=Math.floor(c.y/2),t=a.getTileUrl(c),u.width=p.x*f+"px",u.height=p.y*f+"px",l=(n.y-c.y*f)*p.y,u.marginTop=-l+"px",o=(n.x-c.x*f)*p.x,u.marginLeft=-o+"px",u.clip="rect("+l+"px "+(o+p.x)+"px "+(l+p.y)+"px "+o+"px)",a.fire("tilefallback",{tile:e,url:e._originalSrc,urlMissing:e.src,urlFallback:t}),e.src=t},getTileUrl:function(e){var r=e.z=e.fallback?e.z:this._getZoomForUrl(),t={r:i.Browser.retina?"@2x":"",s:this._getSubdomain(e),x:e.x,y:e.y,z:r};if(this._map&&!this._map.options.crs.infinite){var l=this._globalTileRange.max.y-e.y;this.options.tms&&(t.y=l),t["-y"]=l}return i.Util.template(this._url,i.extend(t,this.options))}}),i.tileLayer.fallback=function(e,r){return new i.TileLayer.Fallback(e,r)}});"""
+
+
+class FallbackTileLayer(folium.TileLayer):
+    """Tile layer that fills missing close-up tiles with the zoomed-out tile instead of a blank."""
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+            if (!L.TileLayer.Fallback) { """ + FALLBACK_JS + """ }
+            var {{ this.get_name() }} = L.tileLayer.fallback(
+                {{ this.tiles|tojson }},
+                {{ this.options|tojavascript }}
+            );
+        {% endmacro %}
+        """)
+
+
+@st.cache_data(show_spinner=False, max_entries=200, ttl=7 * 24 * 3600)
+def _imagery_max_zoom(lat, lon):
+    """Deepest zoom Esri has real imagery for at this spot (checks Esri's tile map). None if unknown."""
+    import requests
+    for z in (19, 18, 17, 16, 15):
+        x, y = _tile_xy(lon, lat, z)
+        try:
+            r = requests.get(f"{IMAGERY}/tilemap/{z}/{int(y)}/{int(x)}/1/1", timeout=5)
+            if r.ok and (r.json().get("data") or [0])[0] == 1:
+                return z
+        except Exception:
+            return None
+    return None
+
+
+def _base_map(center, zoom, native=None):
     m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True, max_zoom=21)
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri, Maxar, Earthstar Geographics", name="Satellite", max_zoom=21, max_native_zoom=19).add_to(m)
+    FallbackTileLayer(
+        tiles=IMAGERY + "/tile/{z}/{y}/{x}?blankTile=false",
+        attr="Esri, Maxar, Earthstar Geographics", name="Satellite", max_zoom=21,
+        max_native_zoom=native or 19).add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Topo", max_zoom=21, max_native_zoom=19, show=False).add_to(m)
@@ -1205,7 +1250,14 @@ def render_map():
                        + [(r["b"][0][1], r["b"][0][0], r["b"][1][1], r["b"][1][0]) for r in rasters])
     aoi = _pad_bbox(vb) if vb else (_pad_bbox((t["lon"], t["lat"], t["lon"], t["lat"]), min_m=1500) if t else None)
 
-    m = _base_map(ss["map_center"], ss["map_zoom"])
+    if vb:
+        ctr = ((vb[1] + vb[3]) / 2, (vb[0] + vb[2]) / 2)
+    elif t:
+        ctr = (t["lat"], t["lon"])
+    else:
+        ctr = tuple(ss["map_center"])
+    native = _imagery_max_zoom(round(ctr[0], 3), round(ctr[1], 3))
+    m = _base_map(ss["map_center"], ss["map_zoom"], native)
 
     for r in rasters:
         url = "data:image/png;base64," + base64.b64encode(r["png"]).decode()
